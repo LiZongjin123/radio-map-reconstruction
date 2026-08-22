@@ -7,3 +7,8 @@ optimizer:
 scheduler:
   T_max: 5
   eta_min: 0.000001
+swanlab:
+  project: radio-map-reconstruction
+  workspace: LiZongjin
+  architecture: ResUNet
+  

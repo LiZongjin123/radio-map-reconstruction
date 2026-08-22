@@ -1,0 +1,8 @@
+.git
+.venv
+RadioMapSeer
+radiomapseer_tiny
+.pytest_cache
+run
+__pycache__/
+swanlog

@@ -1,3 +1,4 @@
+import swanlab
 from os.path import join
 from pathlib import Path
 from torch.optim import Adam
@@ -40,9 +41,24 @@ def test_train_one_epoch():
         pin_memory=True
     )
 
+    swanlab.init(
+        project=CONFIG["swanlab"]["project"],
+        workspace=CONFIG["swanlab"]["workspace"],
+        tags=["unit test"],
+        config={
+            "learning_rate": 3e-4,
+            "epoch": 1
+        }
+    )
+
     res_unet = ResUnet().to(CONFIG["device"])
     criterion = RadioMapLoss()
     optimizer = Adam(res_unet.parameters(), lr=3e-4)
 
-    train_one_epoch(res_unet, train_loader, optimizer, criterion, 0, 1)
-    eval_one_epoch(res_unet, val_loader, criterion, 0, 1)
+    train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, 0, 1)
+    val_loss = eval_one_epoch(res_unet, val_loader, criterion, 0, 1)
+    swanlab.log({
+        "train_loss": train_loss,
+        "val_loss": val_loss
+    })
+    swanlab.finish()

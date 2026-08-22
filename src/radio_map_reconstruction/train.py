@@ -1,3 +1,4 @@
+import swanlab
 from pathlib import Path
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from os.path import join
@@ -82,6 +83,17 @@ def train() -> None:
         pin_memory=True
     )
 
+    swanlab.init(
+        project=CONFIG["swanlab"]["project"],
+        workspace=CONFIG["swanlab"]["workspace"],
+        config={
+            "learning_rate": CONFIG["optimizer"]["init_lr"],
+            "epoch": CONFIG["epoch"],
+            "T_max": CONFIG["scheduler"]["T_max"],
+            "eta_min": CONFIG["scheduler"]["eta_min"]
+        }
+    )
+
     res_unet = ResUnet().to(CONFIG["device"])
     criterion = RadioMapLoss()
     optimizer = Adam(res_unet.parameters(), lr=CONFIG["optimizer"]["init_lr"])
@@ -92,7 +104,11 @@ def train() -> None:
     )
 
     for epoch in range(CONFIG["epoch"]):
-        train_one_epoch(res_unet, train_loader, optimizer, criterion, epoch, CONFIG["epoch"])
-        eval_one_epoch(res_unet, val_loader, criterion, epoch, CONFIG["epoch"])
+        train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, epoch, CONFIG["epoch"])
+        val_loss = eval_one_epoch(res_unet, val_loader, criterion, epoch, CONFIG["epoch"])
         scheduler.step()
-        
+        swanlab.log({
+            "train_loss": train_loss,
+            "val_loss": val_loss
+        })
+    swanlab.finish()

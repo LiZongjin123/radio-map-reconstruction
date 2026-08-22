@@ -22,7 +22,7 @@ def train_one_epoch(
         criterion: Module,
         epoch: int,
         epoch_num: int
-):
+) -> float:
     model.train()
     progress = tqdm(dataloader, desc=f"train {epoch + 1}/{epoch_num}", unit="batch", leave=True)
     total_loss = 0
@@ -41,15 +41,47 @@ def train_one_epoch(
 
     return total_loss / len(dataloader)
 
-def train():
-    train_data = RadioDataset(CONFIG["dataset_path"], CONFIG["partition"])
+def eval_one_epoch(
+        model: Module,
+        dataloader: DataLoader,
+        criterion: Module,
+        epoch: int,
+        epoch_num: int
+) -> float:
+    model.eval()
+    progress = tqdm(dataloader, desc=f"eval {epoch + 1}/{epoch_num}", unit="batch", leave=True)
+    total_loss = 0
+    for batch_index, (inputs, targets) in enumerate(progress):
+        inputs = inputs.to(CONFIG["device"])
+        targets = {name: value.to(CONFIG["device"]) for name, value in targets.items()}
+        outputs = model(inputs)
+        loss = criterion(outputs, targets)
+        total_loss += loss.item()
+        progress.set_postfix(
+            loss = f"{(total_loss / (batch_index + 1)):.6f}"
+        )
+    
+    return total_loss / len(dataloader)
+
+def train() -> None:
+    train_data = RadioDataset("train")
+    val_data = RadioDataset("val")
+
     train_loader = DataLoader(
         dataset=train_data,
-        num_workers=1,
+        num_workers=0,
         batch_size=4,
         shuffle=True,
         pin_memory=True
     )
+    val_loader = DataLoader(
+        dataset=val_data,
+        num_workers=0,
+        batch_size=4,
+        shuffle=True,
+        pin_memory=True
+    )
+
     res_unet = ResUnet().to(CONFIG["device"])
     criterion = RadioMapLoss()
     optimizer = Adam(res_unet.parameters(), lr=CONFIG["optimizer"]["init_lr"])
@@ -61,4 +93,6 @@ def train():
 
     for epoch in range(CONFIG["epoch"]):
         train_one_epoch(res_unet, train_loader, optimizer, criterion, epoch, CONFIG["epoch"])
+        eval_one_epoch(res_unet, val_loader, criterion, epoch, CONFIG["epoch"])
         scheduler.step()
+        

@@ -7,6 +7,8 @@ from radio_map_reconstruction.loss import RadioMapLoss
 from radio_map_reconstruction.model import ResUnet
 from torch.utils.data import DataLoader, Subset
 from radio_map_reconstruction.train import train_one_epoch
+from radio_map_reconstruction.util import delete_run
+from radio_map_reconstruction.split import split
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = join(ROOT, "config.yml")
@@ -14,7 +16,10 @@ with open(CONFIG_PATH, encoding="utf-8") as file:
     CONFIG = safe_load(file)
 
 def test_train_one_epoch():
-    train_data = RadioDataset(CONFIG["dataset_path"], "DPM")
+    delete_run()
+    split()
+    train_data = RadioDataset("train")
+    delete_run()
     indices = [i for i in range(8)]
     train_subset = Subset(train_data, indices)
     train_loader = DataLoader(

@@ -1,44 +1,30 @@
-from os import listdir
+from json import load
+from pathlib import Path
 from torch import Tensor, cat, float32, randperm, zeros_like
 from torch.utils.data import Dataset
 from os.path import join
 from torchvision.io import decode_image, ImageReadMode
 from torchvision.transforms.v2.functional import to_dtype
 
+ROOT = Path(__file__).resolve().parents[2]
+
 class RadioDataset(Dataset):
 
-    def __init__(self, root: str, partition: str):
+    def __init__(self, part: str):
         super().__init__()
-        self.gain_dir = join(root, "gain", partition)
-        self.tx_dir = join(root, "png", "antennas")
-        self.building_map_dir = join(root, "png", "buildings_complete")
-
-        gain_names = set(listdir(self.gain_dir))
-        tx_names = set(listdir(self.tx_dir))
-        building_map_names = set(listdir(self.building_map_dir))
-
-        if len(gain_names) != len(tx_names):
-            raise RuntimeError("Reference Radio Map的数量和Tx Map不一致。")
-        
-        self.samples = []
-        for gain_name in gain_names:
-            if gain_name not in tx_names:
-                raise RuntimeError("存在不匹配的Reference Radio Map和Tx Map。")
-            building_map_index = gain_name.split("_")[0]
-            building_map_name = f"{building_map_index}.png"
-            if building_map_name not in building_map_names:
-                raise RuntimeError("存在不匹配的Reference Radio Map和Building Map")
-            self.samples.append((gain_name, gain_name, building_map_name))
+        path = join(ROOT, "run", f"{part}.json")
+        with open(path, encoding="utf-8") as file:
+            self.samples = load(file)
 
     def __len__(self):
         return len(self.samples) 
 
     def __getitem__(self, index: int) -> set[Tensor, dict[str, Tensor]]:
-        gain_name, tx_name, building_map_name = self.samples[index] 
+        gain_path, tx_path, building_map_path = self.samples[index] 
 
-        gain = self.__read_image(join(self.gain_dir, gain_name))
-        tx = self.__read_image(join(self.tx_dir, tx_name))
-        building_map = self.__read_image(join(self.building_map_dir, building_map_name))
+        gain = self.__read_image(gain_path)
+        tx = self.__read_image(tx_path)
+        building_map = self.__read_image(building_map_path)
         gain_mask = self.__random_sample(gain, tx, building_map, 0.1)
 
         label = {

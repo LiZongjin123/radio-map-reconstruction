@@ -1,0 +1,8 @@
+{
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    // "testing.gutterEnabled": true,
+    // "editor.codeLens": true
+}

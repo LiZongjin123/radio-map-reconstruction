@@ -1,5 +1,6 @@
 import swanlab
 from pathlib import Path
+from torch import inference_mode, save
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from os.path import join
 from torch.nn import Module
@@ -52,15 +53,16 @@ def eval_one_epoch(
     model.eval()
     progress = tqdm(dataloader, desc=f"eval {epoch + 1}/{epoch_num}", unit="batch", leave=True)
     total_loss = 0
-    for batch_index, (inputs, targets) in enumerate(progress):
-        inputs = inputs.to(CONFIG["device"])
-        targets = {name: value.to(CONFIG["device"]) for name, value in targets.items()}
-        outputs = model(inputs)
-        loss = criterion(outputs, targets)
-        total_loss += loss.item()
-        progress.set_postfix(
-            loss = f"{(total_loss / (batch_index + 1)):.6f}"
-        )
+    with inference_mode():
+        for batch_index, (inputs, targets) in enumerate(progress):
+            inputs = inputs.to(CONFIG["device"])
+            targets = {name: value.to(CONFIG["device"]) for name, value in targets.items()}
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            total_loss += loss.item()
+            progress.set_postfix(
+                loss = f"{(total_loss / (batch_index + 1)):.6f}"
+            )
     
     return total_loss / len(dataloader)
 
@@ -103,6 +105,7 @@ def train() -> None:
         eta_min=CONFIG["scheduler"]["eta_min"]
     )
 
+    lowest_val_loss = float("inf")
     for epoch in range(CONFIG["epoch"]):
         train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, epoch, CONFIG["epoch"])
         val_loss = eval_one_epoch(res_unet, val_loader, criterion, epoch, CONFIG["epoch"])
@@ -111,4 +114,23 @@ def train() -> None:
             "train_loss": train_loss,
             "val_loss": val_loss
         })
+
+        last_checkpoint_path = join(ROOT, "run", "last.pt")
+        save_checkpoint(last_checkpoint_path, res_unet)
+        if val_loss < lowest_val_loss:
+            lowest_val_loss = val_loss
+            best_checkpoint_path = join(ROOT, "run", "best.pt")
+            save_checkpoint(best_checkpoint_path, res_unet)
+        
     swanlab.finish()
+
+def save_checkpoint(
+        path: str,
+        model: Module
+):
+   save(
+       {
+           "model_state_dict": model.state_dict()
+       },
+       path
+   )

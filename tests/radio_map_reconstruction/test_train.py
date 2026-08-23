@@ -7,7 +7,7 @@ from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.loss import RadioMapLoss
 from radio_map_reconstruction.model import ResUnet
 from torch.utils.data import DataLoader, Subset
-from radio_map_reconstruction.train import eval_one_epoch, train_one_epoch
+from radio_map_reconstruction.train import eval_one_epoch, save_checkpoint, train_one_epoch
 from radio_map_reconstruction.util import delete_run
 from radio_map_reconstruction.split import split
 
@@ -21,7 +21,6 @@ def test_train_one_epoch():
     split()
     train_data = RadioDataset("train")
     val_data = RadioDataset("val")
-    delete_run()
     indices = [i for i in range(8)]
     train_subset = Subset(train_data, indices)
     val_subset = Subset(val_data, indices)
@@ -57,8 +56,13 @@ def test_train_one_epoch():
 
     train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, 0, 1)
     val_loss = eval_one_epoch(res_unet, val_loader, criterion, 0, 1)
+
+    last_checkpoint_path = join(ROOT, "run", "last.pt")
+    save_checkpoint(last_checkpoint_path, res_unet)
+
     swanlab.log({
         "train_loss": train_loss,
         "val_loss": val_loss
     })
     swanlab.finish()
+    # delete_run()

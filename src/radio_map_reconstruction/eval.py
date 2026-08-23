@@ -1,6 +1,6 @@
 from pathlib import Path
 from os.path import join
-from torch import load
+from torch import Tensor, load
 from torch.nn import Module
 from yaml import safe_load
 from radio_map_reconstruction.data import RadioDataset
@@ -22,6 +22,7 @@ def load_checkpoint(path: str) -> Module:
     return model
 
 
+
 def eval():
     test_dataset = RadioDataset("test")
     test_loader = DataLoader(
@@ -36,8 +37,10 @@ def eval():
     model = load_checkpoint(best_checkpoint_path)
     criterion = RadioMapLoss()
     
-    test_loss = eval_one_epoch(model, test_loader, criterion, 0, 1)
+    test_loss, test_rmse = eval_one_epoch(model, test_loader, criterion, 0, 1)
 
     print(f"test loss: {test_loss:.6f}")
+    print(f"test rmse: {test_rmse:.6f}")
+
 
     

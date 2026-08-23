@@ -1,6 +1,8 @@
+from math import sqrt
+
 import swanlab
 from pathlib import Path
-from torch import inference_mode, save
+from torch import Tensor, inference_mode, save
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from os.path import join
 from torch.nn import Module
@@ -43,13 +45,27 @@ def train_one_epoch(
 
     return total_loss / len(dataloader)
 
+# def _calculate_mse(outputs: Tensor, targets: dict[str, Tensor]):
+#     gain = targets["gain"]
+#     mask = targets["mask"]
+#     if outputs.shape != gain.shape:
+#         raise ValueError("输出与标签的形状不相同")
+#     if outputs.shape != mask.shape:
+#         raise ValueError("输出与掩码形状不相同")
+
+#     # squared_error = (outputs - gain).square()
+#     # return squared_error.masked_select(mask).mean()
+
+#     mse = 
+    
+
 def eval_one_epoch(
         model: Module,
         dataloader: DataLoader,
         criterion: Module,
         epoch: int,
         epoch_num: int
-) -> float:
+) -> tuple[float, float]:
     model.eval()
     progress = tqdm(dataloader, desc=f"eval {epoch + 1}/{epoch_num}", unit="batch", leave=True)
     total_loss = 0
@@ -60,11 +76,13 @@ def eval_one_epoch(
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             total_loss += loss.item()
+            total_mse = total_loss * 80 ** 2
             progress.set_postfix(
-                loss = f"{(total_loss / (batch_index + 1)):.6f}"
+                loss = f"{(total_loss / (batch_index + 1)):.6f}",
+                rmse = f"{sqrt(total_mse / (batch_index + 1)):.6f}"
             )
     
-    return total_loss / len(dataloader)
+    return total_loss / len(dataloader), sqrt(total_mse / len(dataloader))
 
 def train() -> None:
     train_data = RadioDataset("train")
@@ -108,11 +126,12 @@ def train() -> None:
     lowest_val_loss = float("inf")
     for epoch in range(CONFIG["epoch"]):
         train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, epoch, CONFIG["epoch"])
-        val_loss = eval_one_epoch(res_unet, val_loader, criterion, epoch, CONFIG["epoch"])
+        val_loss, val_rmse = eval_one_epoch(res_unet, val_loader, criterion, epoch, CONFIG["epoch"])
         scheduler.step()
         swanlab.log({
             "train_loss": train_loss,
-            "val_loss": val_loss
+            "val_loss": val_loss,
+            "val_rmse": val_rmse
         })
 
         last_checkpoint_path = join(ROOT, "run", "last.pt")

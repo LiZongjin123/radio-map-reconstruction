@@ -57,7 +57,7 @@ def test_train_one_epoch():
 
     lowest_val_loss = float("inf")
     train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, 0, 1)
-    val_loss = eval_one_epoch(res_unet, val_loader, criterion, 0, 1)
+    val_loss, val_rmse = eval_one_epoch(res_unet, val_loader, criterion, 0, 1)
 
     last_checkpoint_path = join(ROOT, "run", "last.pt")
     save_checkpoint(last_checkpoint_path, res_unet)
@@ -68,7 +68,8 @@ def test_train_one_epoch():
 
     swanlab.log({
         "train_loss": train_loss,
-        "val_loss": val_loss
+        "val_loss": val_loss,
+        "val_rmse": val_rmse
     })
     swanlab.finish()
     

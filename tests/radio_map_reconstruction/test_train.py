@@ -73,4 +73,4 @@ def test_train_one_epoch():
     })
     swanlab.finish()
     
-    delete_run()
+    # delete_run()

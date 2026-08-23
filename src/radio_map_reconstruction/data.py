@@ -19,7 +19,7 @@ class RadioDataset(Dataset):
     def __len__(self):
         return len(self.samples) 
 
-    def __getitem__(self, index: int) -> set[Tensor, dict[str, Tensor]]:
+    def __getitem__(self, index: int) -> tuple[Tensor, dict[str, Tensor]]:
         gain_path, tx_path, building_map_path = self.samples[index] 
 
         gain = self.__read_image(gain_path)

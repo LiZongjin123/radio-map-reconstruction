@@ -133,9 +133,10 @@ def save_checkpoint(
         path: str,
         model: Module
 ):
-   save(
-       {
-           "model_state_dict": model.state_dict()
-       },
-       path
-   )
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    save(
+        {
+            "model_state_dict": model.state_dict()
+        },
+        path
+    )

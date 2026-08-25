@@ -18,7 +18,6 @@ dependencies = [
 ]
 
 [project.scripts]
-split = "radio_map_reconstruction.split:split"
 train = "radio_map_reconstruction.train:train"
 eval = "radio_map_reconstruction.eval:eval"
 

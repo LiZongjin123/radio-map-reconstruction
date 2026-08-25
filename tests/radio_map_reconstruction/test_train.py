@@ -9,7 +9,6 @@ from radio_map_reconstruction.model import ResUnet
 from torch.utils.data import DataLoader, Subset
 from radio_map_reconstruction.train import eval_one_epoch, save_checkpoint, train_one_epoch
 from radio_map_reconstruction.util import delete_run
-from radio_map_reconstruction.split import split
 from radio_map_reconstruction.eval import eval
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +18,6 @@ with open(CONFIG_PATH, encoding="utf-8") as file:
 
 def test_train_one_epoch():
     delete_run()
-    split()
     train_data = RadioDataset("train")
     val_data = RadioDataset("val")
     indices = [i for i in range(8)]

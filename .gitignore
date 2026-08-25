@@ -14,3 +14,4 @@ radiomapseer_tiny
 .pytest_cache
 run
 swanlog
+.codex-tmp

@@ -41,36 +41,39 @@ def eval():
     inputs = inputs.to(CONFIG["device"])
     with inference_mode():
         outputs = model(inputs)
-    ground_truth = targets["gain"][0, 0].cpu().numpy()
-    prediction = outputs[0, 0].detach().cpu().clamp(0, 1).numpy()
+    
+    ground_truth = targets["gain"][:, 0].cpu().numpy()
+    prediction = outputs[:, 0].detach().cpu().clamp(0, 1).numpy()
 
-    building_map = inputs[0, 2].cpu().numpy() > 0.5
-    tx_map = inputs[0, 1].cpu().numpy() > 0.5
+    building_map = inputs[:, 2].cpu().numpy() > 0.5
+    tx_map = inputs[:, 1].cpu().numpy() > 0.5
 
     prediction[building_map] = 0
     prediction[tx_map] = 1
     
-    fig, axes = subplots(1, 2)
-    axes[0].imshow(
-        ground_truth,
-        cmap="jet",
-        vmin=0,
-        vmax=1
-    )
-    axes[0].set_title("Ground Truth")
-    axes[0].axis("off")
+    run_dir = join(ROOT, "run")
+    for i in range(4):
+        fig, axes = subplots(1, 2)
+        axes[0].imshow(
+            ground_truth[i],
+            cmap="jet",
+            vmin=0,
+            vmax=1
+        )
+        axes[0].set_title("Ground Truth")
+        axes[0].axis("off")
 
-    axes[1].imshow(
-        prediction,
-        cmap="jet",
-        vmin=0,
-        vmax=1
-    )
-    axes[1].set_title("Prediction")
-    axes[1].axis("off")
+        axes[1].imshow(
+            prediction[i],
+            cmap="jet",
+            vmin=0,
+            vmax=1
+        )
+        axes[1].set_title("Prediction")
+        axes[1].axis("off")
 
-    fig.tight_layout()
-    show()
+        fig_path = join(run_dir, f"result_{i}.png")
+        fig.savefig(fig_path, dpi=300, bbox_inches="tight")
 
     # criterion = RadioMapLoss()
     

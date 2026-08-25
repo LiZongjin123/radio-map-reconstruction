@@ -76,15 +76,15 @@ def train() -> None:
 
     train_loader = DataLoader(
         dataset=train_data,
-        num_workers=0,
-        batch_size=4,
+        num_workers=CONFIG["data_loader"]["num_workers"],
+        batch_size=CONFIG["data_loader"]["batch_size"],
         shuffle=True,
         pin_memory=True
     )
     val_loader = DataLoader(
         dataset=val_data,
-        num_workers=0,
-        batch_size=4,
+        num_workers=CONFIG["data_loader"]["num_workers"],
+        batch_size=CONFIG["data_loader"]["batch_size"],
         shuffle=True,
         pin_memory=True
     )

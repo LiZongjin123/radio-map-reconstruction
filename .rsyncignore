@@ -6,3 +6,4 @@ radiomapseer_tiny
 run
 __pycache__/
 swanlog
+.codex-tmp

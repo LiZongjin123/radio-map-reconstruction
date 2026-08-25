@@ -1,11 +1,14 @@
 dataset_path: C:\Users\LiZongjin\RadioMapSeer
 device: cuda
 partition: DPM
-epoch: 5
+epoch: 20
+data_loader:
+  num_workers: 16
+  batch_size: 32
 optimizer:
   init_lr: 0.0003
 scheduler:
-  T_max: 5
+  T_max: 20
   eta_min: 0.000001
 swanlab:
   project: radio-map-reconstruction

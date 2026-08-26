@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 from yaml import safe_load
 from radio_map_reconstruction.data import RadioDataset
-from radio_map_reconstruction.loss import RadioMapLoss
+from radio_map_reconstruction.loss import RadioMapLoss, normalized_mse_per_sample
 from radio_map_reconstruction.model import ResUnet
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,12 +69,9 @@ def eval_one_epoch(
             batch_size = inputs.shape[0]
             total_loss += loss.item() * batch_size
 
-            squared_error = (outputs.clamp(0, 1) - targets["gain"]).square()
-            error_per_sample = (
-                squared_error * targets["mask"]
-            ).flatten(start_dim=1).sum(dim=1)
-            valid_pixels_per_sample = targets["mask"].flatten(start_dim=1).sum(dim=1)
-            rmse_per_sample = (error_per_sample / valid_pixels_per_sample).sqrt()
+            rmse_per_sample = normalized_mse_per_sample(
+                outputs.clamp(0, 1), targets
+            ).sqrt()
             total_rmse += rmse_per_sample.sum().item()
             total_samples += batch_size
 

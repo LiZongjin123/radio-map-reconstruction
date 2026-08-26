@@ -8,7 +8,9 @@ from torchvision.io import write_png
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def create_image_dataset(root: Path, city_map_count: int = 10) -> None:
+def create_image_dataset(
+    root: Path, city_map_count: int = 10, transmitter_count: int = 1
+) -> None:
     gain_dir = root / "gain" / "DPM"
     antenna_dir = root / "png" / "antennas"
     building_dir = root / "png" / "buildings_complete"
@@ -23,10 +25,11 @@ def create_image_dataset(root: Path, city_map_count: int = 10) -> None:
         transmitter[0, 0, 1] = 255
         building[0, 0, 0] = 255
 
-        name = f"{city_map_id}_0.png"
-        write_png(gain, str(gain_dir / name))
-        write_png(transmitter, str(antenna_dir / name))
         write_png(building, str(building_dir / f"{city_map_id}.png"))
+        for transmitter_id in range(transmitter_count):
+            name = f"{city_map_id}_{transmitter_id}.png"
+            write_png(gain, str(gain_dir / name))
+            write_png(transmitter, str(antenna_dir / name))
 
 
 @fixture(scope="module")
@@ -68,7 +71,7 @@ def test_training_sampling_is_dynamic_and_stays_in_valid_receiving_area(tmp_path
 
 
 def test_validation_and_test_cover_reproducible_fixed_sampling_masks(tmp_path: Path):
-    create_image_dataset(tmp_path)
+    create_image_dataset(tmp_path, transmitter_count=2)
     expected_sample_counts = [10, 20, 30, 50, 75, 100, 125, 150, 175, 200]
 
     masks_by_part: dict[str, list[Tensor]] = {}
@@ -79,7 +82,9 @@ def test_validation_and_test_cover_reproducible_fixed_sampling_masks(tmp_path: P
         first_masks = [first[index][0][3] for index in range(len(first))]
         repeated_masks = [repeated[index][0][3] for index in range(len(repeated))]
 
-        assert [int(mask.sum().item()) for mask in first_masks] == expected_sample_counts
+        assert [int(mask.sum().item()) for mask in first_masks] == (
+            expected_sample_counts * 2
+        )
         assert all(
             first_mask.equal(repeated_mask)
             for first_mask, repeated_mask in zip(first_masks, repeated_masks)
@@ -88,11 +93,28 @@ def test_validation_and_test_cover_reproducible_fixed_sampling_masks(tmp_path: P
         assert all(mask[0, 1].item() == 0 for mask in first_masks)
         assert any(
             not (smaller.bool() <= larger.bool()).all().item()
-            for smaller, larger in zip(first_masks, first_masks[1:])
+            for smaller, larger in zip(first_masks[:9], first_masks[1:10])
+        )
+        assert any(
+            not first_masks[index].equal(first_masks[index + 10])
+            for index in range(10)
         )
         masks_by_part[part] = first_masks
 
     assert any(
         not val_mask.equal(test_mask)
         for val_mask, test_mask in zip(masks_by_part["val"], masks_by_part["test"])
+    )
+
+    single_city_root = tmp_path / "single-city"
+    create_image_dataset(single_city_root, city_map_count=1)
+    first_seed = RadioDataset(
+        "test", dataset_path=single_city_root, partition="DPM", seed=17
+    )
+    second_seed = RadioDataset(
+        "test", dataset_path=single_city_root, partition="DPM", seed=18
+    )
+    assert any(
+        not first_seed[index][0][3].equal(second_seed[index][0][3])
+        for index in range(10)
     )

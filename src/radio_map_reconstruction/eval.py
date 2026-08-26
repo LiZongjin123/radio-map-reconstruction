@@ -1,86 +1,140 @@
+import csv
 from pathlib import Path
-from os.path import join
-from matplotlib.pyplot import show, subplots
-from torch import Tensor, inference_mode, load
+
+import numpy as np
+from torch import inference_mode, load, zeros_like
 from torch.nn import Module
-from yaml import safe_load
+from torch.utils.data import DataLoader, Dataset
+
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.loss import RadioMapLoss
 from radio_map_reconstruction.model import ResUnet
-from torch.utils.data import DataLoader
-
-from radio_map_reconstruction.train import eval_one_epoch
+from radio_map_reconstruction.train import CONFIG, eval_one_epoch
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = join(ROOT, "config.yml")
-with open(CONFIG_PATH, encoding="utf-8") as file:
-    CONFIG = safe_load(file)
 
-def load_checkpoint(path: str) -> Module:
+EVALUATION_BUNDLE_CASES = (
+    (0, 10),
+    (1, 50),
+    (2, 100),
+    (3, 200),
+)
+
+
+def load_checkpoint(path: str | Path) -> Module:
     checkpoint = load(path, map_location=CONFIG["device"])
     model = ResUnet().to(CONFIG["device"])
     model.load_state_dict(checkpoint["model_state_dict"])
     return model
 
 
-
-def eval():
-    test_dataset = RadioDataset("test")
+def run_evaluation(
+    *,
+    model: Module,
+    test_dataset: Dataset,
+    criterion: Module,
+    evaluation_dir: str | Path,
+    batch_size: int,
+) -> tuple[float, float, dict[int, float]]:
+    evaluation_dir = Path(evaluation_dir)
+    evaluation_dir.mkdir(parents=True, exist_ok=True)
     test_loader = DataLoader(
         dataset=test_dataset,
         num_workers=0,
-        batch_size=4,
+        batch_size=batch_size,
         shuffle=False,
-        pin_memory=True
+        pin_memory=True,
     )
 
-    best_checkpoint_path = join(ROOT, "run", "best.pt")
-    model = load_checkpoint(best_checkpoint_path)
-
-    criterion = RadioMapLoss()
-    test_loss, test_rmse, test_rmse_by_sample_count = eval_one_epoch(
+    test_loss, test_rmse, rmse_by_sample_count = eval_one_epoch(
         model, test_loader, criterion, epoch=0, epoch_num=1
     )
+    _write_test_metrics(evaluation_dir, rmse_by_sample_count)
+    _write_evaluation_bundles(evaluation_dir, model, test_dataset)
+    return test_loss, test_rmse, rmse_by_sample_count
+
+
+def _write_test_metrics(
+    evaluation_dir: Path,
+    rmse_by_sample_count: dict[int, float],
+) -> None:
+    metrics_path = evaluation_dir / "test_metrics.csv"
+    fieldnames = (
+        "sample_count",
+        "mean_per_sample_normalized_rmse",
+    )
+    with metrics_path.open("w", newline="", encoding="utf-8") as metrics_file:
+        writer = csv.DictWriter(metrics_file, fieldnames=fieldnames)
+        writer.writeheader()
+        for sample_count in RadioDataset.EVALUATION_SAMPLE_COUNTS:
+            writer.writerow({
+                "sample_count": sample_count,
+                "mean_per_sample_normalized_rmse": rmse_by_sample_count[
+                    sample_count
+                ],
+            })
+
+
+def _write_evaluation_bundles(
+    evaluation_dir: Path,
+    model: Module,
+    test_dataset: Dataset,
+) -> None:
+    model.eval()
+    sample_counts = RadioDataset.EVALUATION_SAMPLE_COUNTS
+    with inference_mode():
+        for bundle_index, (sample_index, sample_count) in enumerate(
+            EVALUATION_BUNDLE_CASES
+        ):
+            sample_count_index = sample_counts.index(sample_count)
+            dataset_index = sample_index * len(sample_counts) + sample_count_index
+            inputs, targets = test_dataset[dataset_index]
+            device_inputs = inputs.unsqueeze(0).to(CONFIG["device"])
+            output = model(device_inputs)[0, 0].clamp(0, 1)
+
+            ground_truth = targets["gain"][0].to(output.device)
+            valid_receiving_area = targets["mask"][0].to(output.device).bool()
+            transmitter = device_inputs[0, 1] > 0.5
+            building = device_inputs[0, 2] > 0.5
+            sampling_mask = (
+                (device_inputs[0, 3] > 0.5) & valid_receiving_area
+            )
+            sparse_map = device_inputs[0, 0].where(
+                sampling_mask, zeros_like(device_inputs[0, 0])
+            )
+
+            reconstruction = output.clone()
+            reconstruction[building] = 0
+            reconstruction[transmitter] = 1
+            absolute_error = (reconstruction - ground_truth).abs()
+            absolute_error[~valid_receiving_area] = float("nan")
+
+            np.savez_compressed(
+                evaluation_dir / f"evaluation_bundle_{bundle_index}.npz",
+                sample_count=np.asarray(sample_count),
+                ground_truth=ground_truth.cpu().numpy(),
+                sampling_mask=sampling_mask.cpu().numpy(),
+                sparse_map=sparse_map.cpu().numpy(),
+                reconstruction=reconstruction.cpu().numpy(),
+                absolute_error=absolute_error.cpu().numpy(),
+            )
+
+
+def eval() -> None:
+    test_dataset = RadioDataset("test")
+    model = load_checkpoint(ROOT / "run" / "best.pt")
+    test_loss, test_rmse, rmse_by_sample_count = run_evaluation(
+        model=model,
+        test_dataset=test_dataset,
+        criterion=RadioMapLoss(),
+        evaluation_dir=ROOT / "run" / "evaluation",
+        batch_size=CONFIG["data_loader"]["batch_size"],
+    )
+
     print(f"test loss: {test_loss:.6f}")
     print(f"test rmse: {test_rmse:.6f}")
-    for sample_count, rmse in sorted(test_rmse_by_sample_count.items()):
-        print(f"test rmse ({sample_count} samples): {rmse:.6f}")
-
-    inputs, targets = next(iter(test_loader))
-    inputs = inputs.to(CONFIG["device"])
-    with inference_mode():
-        outputs = model(inputs)
-    
-    ground_truth = targets["gain"][:, 0].cpu().numpy()
-    prediction = outputs[:, 0].detach().cpu().clamp(0, 1).numpy()
-
-    building_map = inputs[:, 2].cpu().numpy() > 0.5
-    tx_map = inputs[:, 1].cpu().numpy() > 0.5
-
-    prediction[building_map] = 0
-    prediction[tx_map] = 1
-    
-    run_dir = join(ROOT, "run")
-    for i in range(4):
-        fig, axes = subplots(1, 2)
-        axes[0].imshow(
-            ground_truth[i],
-            cmap="jet",
-            vmin=0,
-            vmax=1
+    for sample_count in RadioDataset.EVALUATION_SAMPLE_COUNTS:
+        print(
+            f"test rmse ({sample_count} samples): "
+            f"{rmse_by_sample_count[sample_count]:.6f}"
         )
-        axes[0].set_title("Ground Truth")
-        axes[0].axis("off")
-
-        axes[1].imshow(
-            prediction[i],
-            cmap="jet",
-            vmin=0,
-            vmax=1
-        )
-        axes[1].set_title("Prediction")
-        axes[1].axis("off")
-
-        fig_path = join(run_dir, f"result_{i}.png")
-        fig.savefig(fig_path, dpi=300, bbox_inches="tight")
-

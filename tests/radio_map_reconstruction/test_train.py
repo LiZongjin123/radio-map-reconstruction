@@ -50,7 +50,8 @@ def test_eval_epoch_reports_unclipped_loss_and_clipped_rmse_by_sample_count(
         for count_index, sample_count in enumerate(sample_counts):
             prediction = count_index / 10 if map_index == 0 else 2.0
             inputs = tensor(0.0).new_zeros((4, 1, 200))
-            inputs[0] = prediction
+            inputs[0] = 9.0 if map_index == 0 else prediction
+            inputs[0, 0, 0] = prediction
             inputs[3, 0, :sample_count] = 1
             valid_receiving_area = tensor(False).new_zeros((1, 1, 200))
             valid_receiving_area[..., : 1 if map_index == 0 else 200] = True

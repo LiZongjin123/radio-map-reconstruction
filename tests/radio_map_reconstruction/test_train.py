@@ -15,6 +15,8 @@ from radio_map_reconstruction.train import (
     train_one_epoch,
 )
 
+EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
+
 
 class PassThroughModel(Module):
     def __init__(self):
@@ -26,9 +28,9 @@ class PassThroughModel(Module):
 
 
 class ConstantPredictionModel(Module):
-    def __init__(self):
+    def __init__(self, initial_prediction: float):
         super().__init__()
-        self.prediction = Parameter(tensor(-0.2))
+        self.prediction = Parameter(tensor(initial_prediction))
 
     def forward(self, inputs: Tensor) -> Tensor:
         return self.prediction.expand(inputs.shape[0], 1, 1, inputs.shape[-1])
@@ -42,9 +44,8 @@ def make_orchestration_loaders() -> tuple[DataLoader, DataLoader]:
     }
     train_loader = DataLoader([(train_inputs, train_targets)], batch_size=1)
 
-    sample_counts = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
     val_samples = []
-    for index, sample_count in enumerate(sample_counts):
+    for index, sample_count in enumerate(EVALUATION_SAMPLE_COUNTS):
         inputs = tensor(0.0).new_zeros((4, 1, 200))
         inputs[3, 0, :sample_count] = 1
         val_samples.append(
@@ -86,10 +87,9 @@ def test_eval_epoch_reports_unclipped_loss_and_clipped_rmse_by_sample_count(
     monkeypatch,
 ):
     monkeypatch.setitem(CONFIG, "device", "cpu")
-    sample_counts = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
     samples = []
     for map_index in range(2):
-        for count_index, sample_count in enumerate(sample_counts):
+        for count_index, sample_count in enumerate(EVALUATION_SAMPLE_COUNTS):
             prediction = count_index / 10 if map_index == 0 else 2.0
             inputs = tensor(0.0).new_zeros((4, 1, 200))
             inputs[0] = 9.0 if map_index == 0 else prediction
@@ -117,7 +117,7 @@ def test_eval_epoch_reports_unclipped_loss_and_clipped_rmse_by_sample_count(
 
     expected_rmse_by_sample_count = {
         sample_count: (count_index / 10 + 1.0) / 2
-        for count_index, sample_count in enumerate(sample_counts)
+        for count_index, sample_count in enumerate(EVALUATION_SAMPLE_COUNTS)
     }
     assert loss == approx(2.1425)
     assert rmse == approx(0.725)
@@ -132,9 +132,9 @@ def test_training_writes_history_and_selects_best_average_rmse_without_clearing_
     sentinel = tmp_path / "keep.txt"
     sentinel.write_text("keep", encoding="utf-8")
 
-    def run_once() -> None:
+    def run_once(initial_prediction: float) -> None:
         train_loader, val_loader = make_orchestration_loaders()
-        model = ConstantPredictionModel()
+        model = ConstantPredictionModel(initial_prediction)
         optimizer = SGD(model.parameters(), lr=0.25)
         scheduler = ExponentialLR(optimizer, gamma=0.5)
         run_training(
@@ -148,8 +148,8 @@ def test_training_writes_history_and_selects_best_average_rmse_without_clearing_
             run_dir=tmp_path,
         )
 
-    run_once()
-    run_once()
+    run_once(-0.2)
+    run_once(-0.1)
 
     with (tmp_path / "history.csv").open(newline="", encoding="utf-8") as file:
         rows = list(csv.DictReader(file))
@@ -158,18 +158,22 @@ def test_training_writes_history_and_selects_best_average_rmse_without_clearing_
         "epoch",
         "train_loss",
         "val_loss",
-        "val_rmse",
+        "val_mean_per_sample_normalized_rmse",
         "learning_rate",
     ]
     assert len(rows) == 2
     assert [int(row["epoch"]) for row in rows] == [1, 2]
-    assert [float(row["train_loss"]) for row in rows] == approx([0.16, 0.04])
-    assert [float(row["val_loss"]) for row in rows] == approx([0.1, 0.0925])
-    assert [float(row["val_rmse"]) for row in rows] == approx([0.1, 0.14])
+    assert [float(row["train_loss"]) for row in rows] == approx([0.09, 0.0225])
+    assert [float(row["val_loss"]) for row in rows] == approx([0.0925, 0.09015625])
+    assert [
+        float(row["val_mean_per_sample_normalized_rmse"]) for row in rows
+    ] == approx([0.14, 0.17])
     assert [float(row["learning_rate"]) for row in rows] == approx([0.25, 0.125])
 
     best = load(tmp_path / "best.pt", weights_only=True)
     latest = load(tmp_path / "latest.pt", weights_only=True)
-    assert best["model_state_dict"]["prediction"].item() == approx(0.0, abs=1e-7)
-    assert latest["model_state_dict"]["prediction"].item() == approx(0.05, abs=1e-7)
+    assert best["model_state_dict"]["prediction"].item() == approx(0.05, abs=1e-7)
+    assert latest["model_state_dict"]["prediction"].item() == approx(
+        0.0875, abs=1e-7
+    )
     assert sentinel.read_text(encoding="utf-8") == "keep"

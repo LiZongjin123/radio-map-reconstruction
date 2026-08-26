@@ -124,7 +124,7 @@ def run_training(
         "epoch",
         "train_loss",
         "val_loss",
-        "val_rmse",
+        "val_mean_per_sample_normalized_rmse",
         "learning_rate",
     )
     best_val_rmse = float("inf")
@@ -141,7 +141,7 @@ def run_training(
             val_loss, _, val_rmse_by_sample_count = eval_one_epoch(
                 model, val_loader, criterion, epoch, epoch_num
             )
-            val_rmse = sum(
+            val_mean_per_sample_normalized_rmse = sum(
                 val_rmse_by_sample_count[sample_count]
                 for sample_count in RadioDataset.EVALUATION_SAMPLE_COUNTS
             ) / len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
@@ -150,22 +150,27 @@ def run_training(
                 "epoch": epoch + 1,
                 "train_loss": train_loss,
                 "val_loss": val_loss,
-                "val_rmse": val_rmse,
+                "val_mean_per_sample_normalized_rmse": (
+                    val_mean_per_sample_normalized_rmse
+                ),
                 "learning_rate": learning_rate,
             }
             writer.writerow(metrics)
             history_file.flush()
 
             save_checkpoint(run_dir / "latest.pt", model)
-            if val_rmse < best_val_rmse:
-                best_val_rmse = val_rmse
+            if val_mean_per_sample_normalized_rmse < best_val_rmse:
+                best_val_rmse = val_mean_per_sample_normalized_rmse
                 save_checkpoint(run_dir / "best.pt", model)
 
             if metric_logger is not None:
                 metric_logger({
                     **metrics,
                     **{
-                        f"val_rmse_{sample_count}_samples": rmse
+                        (
+                            "val_mean_per_sample_normalized_rmse_"
+                            f"{sample_count}_samples"
+                        ): rmse
                         for sample_count, rmse in val_rmse_by_sample_count.items()
                     },
                 })

@@ -1,5 +1,3 @@
-from math import sqrt
-
 import swanlab
 from pathlib import Path
 from torch import Tensor, inference_mode, save
@@ -29,8 +27,9 @@ def train_one_epoch(
 ) -> float:
     model.train()
     progress = tqdm(dataloader, desc=f"train {epoch + 1}/{epoch_num}", unit="batch", leave=True)
-    total_loss = 0
-    for batch_index, (inputs, targets) in enumerate(progress):
+    total_loss = 0.0
+    total_samples = 0
+    for inputs, targets in progress:
         optimizer.zero_grad()
         inputs = inputs.to(CONFIG["device"])
         targets = {name: value.to(CONFIG["device"]) for name, value in targets.items()}
@@ -38,12 +37,14 @@ def train_one_epoch(
         loss = criterion(outputs, targets)
         loss.backward()
         optimizer.step()
-        total_loss += loss.item()
+        batch_size = inputs.shape[0]
+        total_loss += loss.item() * batch_size
+        total_samples += batch_size
         progress.set_postfix(
-            loss = f"{(total_loss / (batch_index + 1)):.6f}"
+            loss = f"{(total_loss / total_samples):.6f}"
         )
 
-    return total_loss / len(dataloader)
+    return total_loss / total_samples
 
 def eval_one_epoch(
         model: Module,
@@ -51,24 +52,58 @@ def eval_one_epoch(
         criterion: Module,
         epoch: int,
         epoch_num: int
-) -> tuple[float, float]:
+) -> tuple[float, float, dict[int, float]]:
     model.eval()
     progress = tqdm(dataloader, desc=f"eval {epoch + 1}/{epoch_num}", unit="batch", leave=True)
-    total_loss = 0
+    total_loss = 0.0
+    total_rmse = 0.0
+    total_samples = 0
+    rmse_sums_by_sample_count: dict[int, float] = {}
+    case_counts_by_sample_count: dict[int, int] = {}
     with inference_mode():
-        for batch_index, (inputs, targets) in enumerate(progress):
+        for inputs, targets in progress:
             inputs = inputs.to(CONFIG["device"])
             targets = {name: value.to(CONFIG["device"]) for name, value in targets.items()}
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-            total_loss += loss.item()
-            total_mse = total_loss * 80 ** 2
+            batch_size = inputs.shape[0]
+            total_loss += loss.item() * batch_size
+
+            squared_error = (outputs.clamp(0, 1) - targets["gain"]).square()
+            error_per_sample = (
+                squared_error * targets["mask"]
+            ).flatten(start_dim=1).sum(dim=1)
+            valid_pixels_per_sample = targets["mask"].flatten(start_dim=1).sum(dim=1)
+            rmse_per_sample = (error_per_sample / valid_pixels_per_sample).sqrt()
+            total_rmse += rmse_per_sample.sum().item()
+            total_samples += batch_size
+
+            sample_counts = inputs[:, 3].flatten(start_dim=1).sum(dim=1)
+            for sample_count, rmse in zip(
+                sample_counts.tolist(), rmse_per_sample.tolist(), strict=True
+            ):
+                count = int(sample_count)
+                rmse_sums_by_sample_count[count] = (
+                    rmse_sums_by_sample_count.get(count, 0.0) + rmse
+                )
+                case_counts_by_sample_count[count] = (
+                    case_counts_by_sample_count.get(count, 0) + 1
+                )
+
             progress.set_postfix(
-                loss = f"{(total_loss / (batch_index + 1)):.6f}",
-                rmse = f"{sqrt(total_mse / (batch_index + 1)):.6f}"
+                loss = f"{(total_loss / total_samples):.6f}",
+                rmse = f"{(total_rmse / total_samples):.6f}"
             )
-    
-    return total_loss / len(dataloader), sqrt(total_mse / len(dataloader))
+
+    rmse_by_sample_count = {
+        sample_count: rmse_sum / case_counts_by_sample_count[sample_count]
+        for sample_count, rmse_sum in rmse_sums_by_sample_count.items()
+    }
+    return (
+        total_loss / total_samples,
+        total_rmse / total_samples,
+        rmse_by_sample_count,
+    )
 
 def train() -> None:
     train_data = RadioDataset("train")
@@ -112,12 +147,18 @@ def train() -> None:
     lowest_val_loss = float("inf")
     for epoch in range(CONFIG["epoch"]):
         train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, epoch, CONFIG["epoch"])
-        val_loss, val_rmse = eval_one_epoch(res_unet, val_loader, criterion, epoch, CONFIG["epoch"])
+        val_loss, val_rmse, val_rmse_by_sample_count = eval_one_epoch(
+            res_unet, val_loader, criterion, epoch, CONFIG["epoch"]
+        )
         scheduler.step()
         swanlab.log({
             "train_loss": train_loss,
             "val_loss": val_loss,
-            "val_rmse": val_rmse
+            "val_rmse": val_rmse,
+            **{
+                f"val_rmse_{sample_count}_samples": rmse
+                for sample_count, rmse in val_rmse_by_sample_count.items()
+            },
         })
 
         last_checkpoint_path = join(ROOT, "run", "last.pt")

@@ -37,6 +37,15 @@ def eval():
     best_checkpoint_path = join(ROOT, "run", "best.pt")
     model = load_checkpoint(best_checkpoint_path)
 
+    criterion = RadioMapLoss()
+    test_loss, test_rmse, test_rmse_by_sample_count = eval_one_epoch(
+        model, test_loader, criterion, epoch=0, epoch_num=1
+    )
+    print(f"test loss: {test_loss:.6f}")
+    print(f"test rmse: {test_rmse:.6f}")
+    for sample_count, rmse in sorted(test_rmse_by_sample_count.items()):
+        print(f"test rmse ({sample_count} samples): {rmse:.6f}")
+
     inputs, targets = next(iter(test_loader))
     inputs = inputs.to(CONFIG["device"])
     with inference_mode():
@@ -75,12 +84,3 @@ def eval():
         fig_path = join(run_dir, f"result_{i}.png")
         fig.savefig(fig_path, dpi=300, bbox_inches="tight")
 
-    # criterion = RadioMapLoss()
-    
-    # test_loss, test_rmse = eval_one_epoch(model, test_loader, criterion, 0, 1)
-
-    # print(f"test loss: {test_loss:.6f}")
-    # print(f"test rmse: {test_rmse:.6f}")
-
-
-    

@@ -1,74 +1,76 @@
-import swanlab
-from os.path import join
-from pathlib import Path
-from torch.optim import Adam
-from yaml import safe_load
-from radio_map_reconstruction.data import RadioDataset
+from pytest import approx
+from torch import Tensor, tensor
+from torch.nn import Module, Parameter
+from torch.optim import SGD
+from torch.utils.data import DataLoader
+
 from radio_map_reconstruction.loss import RadioMapLoss
-from radio_map_reconstruction.model import ResUnet
-from torch.utils.data import DataLoader, Subset
-from radio_map_reconstruction.train import eval_one_epoch, save_checkpoint, train_one_epoch
-from radio_map_reconstruction.util import delete_run
-from radio_map_reconstruction.eval import eval
+from radio_map_reconstruction.train import CONFIG, eval_one_epoch, train_one_epoch
 
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = join(ROOT, "config.yml")
-with open(CONFIG_PATH, encoding="utf-8") as file:
-    CONFIG = safe_load(file)
 
-def test_train_one_epoch():
-    delete_run()
-    train_data = RadioDataset("train")
-    val_data = RadioDataset("val")
-    indices = [i for i in range(8)]
-    train_subset = Subset(train_data, indices)
-    val_subset = Subset(val_data, indices)
+class PassThroughModel(Module):
+    def __init__(self):
+        super().__init__()
+        self.anchor = Parameter(tensor(0.0))
 
-    train_loader = DataLoader(
-        dataset=train_subset,
-        num_workers=0,
-        batch_size=4,
-        shuffle=True,
-        pin_memory=True
-    )
-    val_loader = DataLoader(
-        dataset=val_subset,
-        num_workers=0,
-        batch_size=4,
-        shuffle=True,
-        pin_memory=True
+    def forward(self, inputs: Tensor) -> Tensor:
+        return inputs[:, :1] + self.anchor * 0
+
+
+def test_train_epoch_loss_weights_samples_equally_across_uneven_batches(monkeypatch):
+    monkeypatch.setitem(CONFIG, "device", "cpu")
+    samples = [
+        (
+            tensor([[[prediction]]]),
+            {
+                "gain": tensor([[[0.0]]]),
+                "mask": tensor([[[True]]]),
+            },
+        )
+        for prediction in (1.0, 1.0, 3.0)
+    ]
+    dataloader = DataLoader(samples, batch_size=2, shuffle=False)
+    model = PassThroughModel()
+    optimizer = SGD(model.parameters(), lr=0.0)
+
+    epoch_loss = train_one_epoch(
+        model, dataloader, optimizer, RadioMapLoss(), epoch=0, epoch_num=1
     )
 
-    swanlab.init(
-        project=CONFIG["swanlab"]["project"],
-        workspace=CONFIG["swanlab"]["workspace"],
-        tags=["unit test"],
-        config={
-            "learning_rate": 3e-4,
-            "epoch": 1
-        }
+    assert epoch_loss == approx(11 / 3)
+
+
+def test_eval_epoch_reports_unclipped_loss_and_clipped_rmse_by_sample_count(
+    monkeypatch,
+):
+    monkeypatch.setitem(CONFIG, "device", "cpu")
+    sample_counts = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
+    samples = []
+    for prediction in (2.0, 0.0):
+        for sample_count in sample_counts:
+            inputs = tensor(0.0).new_zeros((4, 1, 200))
+            inputs[0] = prediction
+            inputs[3, 0, :sample_count] = 1
+            samples.append(
+                (
+                    inputs,
+                    {
+                        "gain": tensor(0.0).new_zeros((1, 1, 200)),
+                        "mask": tensor(True).new_ones((1, 1, 200)),
+                    },
+                )
+            )
+
+    loss, rmse, rmse_by_sample_count = eval_one_epoch(
+        PassThroughModel(),
+        DataLoader(samples, batch_size=6, shuffle=False),
+        RadioMapLoss(),
+        epoch=0,
+        epoch_num=1,
     )
 
-    res_unet = ResUnet().to(CONFIG["device"])
-    criterion = RadioMapLoss()
-    optimizer = Adam(res_unet.parameters(), lr=3e-4)
-
-    lowest_val_loss = float("inf")
-    train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, 0, 1)
-    val_loss, val_rmse = eval_one_epoch(res_unet, val_loader, criterion, 0, 1)
-
-    last_checkpoint_path = join(ROOT, "run", "last.pt")
-    save_checkpoint(last_checkpoint_path, res_unet)
-    if val_loss < lowest_val_loss:
-        lowest_val_loss = val_loss
-        best_checkpoint_path = join(ROOT, "run", "best.pt")
-        save_checkpoint(best_checkpoint_path, res_unet)
-
-    swanlab.log({
-        "train_loss": train_loss,
-        "val_loss": val_loss,
-        "val_rmse": val_rmse
-    })
-    swanlab.finish()
-    
-    delete_run()
+    assert loss == approx(2.0)
+    assert rmse == approx(0.5)
+    assert rmse_by_sample_count == approx(
+        {sample_count: 0.5 for sample_count in sample_counts}
+    )

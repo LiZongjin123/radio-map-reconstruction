@@ -2,7 +2,7 @@ import csv
 
 import numpy as np
 from pytest import approx
-from torch import Tensor, tensor
+from torch import Tensor, are_deterministic_algorithms_enabled, tensor
 from torch.nn import Module, Parameter
 from torch.utils.data import Dataset
 
@@ -42,10 +42,14 @@ class FixedEvaluationDataset(Dataset):
 class OutOfRangeModel(Module):
     def __init__(self):
         super().__init__()
-        self.anchor = Parameter(tensor(0.0))
+        self.dummy_parameter = Parameter(tensor(0.0))
 
     def forward(self, inputs: Tensor) -> Tensor:
-        return tensor(1.5).expand(inputs.shape[0], 1, 1, 202) + self.anchor * 0
+        assert are_deterministic_algorithms_enabled()
+        return (
+            tensor(1.5).expand(inputs.shape[0], 1, 1, 202)
+            + self.dummy_parameter * 0
+        )
 
 
 def load_bundles(evaluation_dir):
@@ -59,6 +63,9 @@ def load_bundles(evaluation_dir):
 def test_evaluation_writes_reproducible_metrics_and_bundles_without_png(
     monkeypatch, tmp_path
 ):
+    deterministic_algorithms_were_enabled = (
+        are_deterministic_algorithms_enabled()
+    )
     monkeypatch.setitem(CONFIG, "device", "cpu")
     evaluation_dir = tmp_path / "evaluation"
     evaluation_dir.mkdir()
@@ -130,3 +137,7 @@ def test_evaluation_writes_reproducible_metrics_and_bundles_without_png(
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert list(evaluation_dir.glob("*.png")) == [existing_png]
+    assert (
+        are_deterministic_algorithms_enabled()
+        == deterministic_algorithms_were_enabled
+    )

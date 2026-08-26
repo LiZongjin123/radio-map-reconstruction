@@ -2,7 +2,15 @@ import csv
 from pathlib import Path
 
 import numpy as np
-from torch import inference_mode, load, zeros_like
+from torch import (
+    are_deterministic_algorithms_enabled,
+    backends,
+    inference_mode,
+    is_deterministic_algorithms_warn_only_enabled,
+    load,
+    use_deterministic_algorithms,
+    zeros_like,
+)
 from torch.nn import Module
 from torch.utils.data import DataLoader, Dataset
 
@@ -36,22 +44,41 @@ def run_evaluation(
     evaluation_dir: str | Path,
     batch_size: int,
 ) -> tuple[float, float, dict[int, float]]:
-    evaluation_dir = Path(evaluation_dir)
-    evaluation_dir.mkdir(parents=True, exist_ok=True)
-    test_loader = DataLoader(
-        dataset=test_dataset,
-        num_workers=0,
-        batch_size=batch_size,
-        shuffle=False,
-        pin_memory=True,
+    deterministic_algorithms_were_enabled = (
+        are_deterministic_algorithms_enabled()
     )
+    deterministic_warn_only_was_enabled = (
+        is_deterministic_algorithms_warn_only_enabled()
+    )
+    cudnn_deterministic_was_enabled = backends.cudnn.deterministic
+    cudnn_benchmark_was_enabled = backends.cudnn.benchmark
+    use_deterministic_algorithms(True)
+    backends.cudnn.deterministic = True
+    backends.cudnn.benchmark = False
+    try:
+        evaluation_dir = Path(evaluation_dir)
+        evaluation_dir.mkdir(parents=True, exist_ok=True)
+        test_loader = DataLoader(
+            dataset=test_dataset,
+            num_workers=0,
+            batch_size=batch_size,
+            shuffle=False,
+            pin_memory=True,
+        )
 
-    test_loss, test_rmse, rmse_by_sample_count = eval_one_epoch(
-        model, test_loader, criterion, epoch=0, epoch_num=1
-    )
-    _write_test_metrics(evaluation_dir, rmse_by_sample_count)
-    _write_evaluation_bundles(evaluation_dir, model, test_dataset)
-    return test_loss, test_rmse, rmse_by_sample_count
+        test_loss, test_rmse, rmse_by_sample_count = eval_one_epoch(
+            model, test_loader, criterion, epoch=0, epoch_num=1
+        )
+        _write_test_metrics(evaluation_dir, rmse_by_sample_count)
+        _write_evaluation_bundles(evaluation_dir, model, test_dataset)
+        return test_loss, test_rmse, rmse_by_sample_count
+    finally:
+        use_deterministic_algorithms(
+            deterministic_algorithms_were_enabled,
+            warn_only=deterministic_warn_only_was_enabled,
+        )
+        backends.cudnn.deterministic = cudnn_deterministic_was_enabled
+        backends.cudnn.benchmark = cudnn_benchmark_was_enabled
 
 
 def _write_test_metrics(

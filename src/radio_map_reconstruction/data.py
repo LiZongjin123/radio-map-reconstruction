@@ -1,7 +1,8 @@
+from hashlib import blake2b
 from pathlib import Path
 from random import Random
 
-from torch import Tensor, cat, float32, randperm, zeros_like
+from torch import Generator, Tensor, cat, float32, randint, randperm, zeros_like
 from torch.utils.data import Dataset
 from torchvision.io import decode_image, ImageReadMode
 from torchvision.transforms.v2.functional import to_dtype
@@ -14,6 +15,8 @@ with CONFIG_PATH.open(encoding="utf-8") as file:
 
 
 class RadioDataset(Dataset):
+
+    EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
 
     def __init__(
         self,
@@ -30,6 +33,8 @@ class RadioDataset(Dataset):
         root = Path(dataset_path or CONFIG["dataset_path"])
         selected_partition = partition or CONFIG["partition"]
         base_seed = CONFIG["seed"] if seed is None else seed
+        self.part = part
+        self.base_seed = base_seed
         self.samples = self._discover_split(root, selected_partition, base_seed, part)
 
     @staticmethod
@@ -86,15 +91,38 @@ class RadioDataset(Dataset):
         return [sample for _, samples in city_maps[start:end] for sample in samples]
 
     def __len__(self):
+        if self.part != "train":
+            return len(self.samples) * len(self.EVALUATION_SAMPLE_COUNTS)
         return len(self.samples)
 
     def __getitem__(self, index: int) -> tuple[Tensor, dict[str, Tensor]]:
-        gain_path, tx_path, building_map_path = self.samples[index] 
+        if self.part == "train":
+            sample_index = index
+            sample_count = int(randint(10, 201, ()).item())
+            generator = None
+        else:
+            sample_index, sample_count_index = divmod(
+                index, len(self.EVALUATION_SAMPLE_COUNTS)
+            )
+            sample_count = self.EVALUATION_SAMPLE_COUNTS[sample_count_index]
+
+        gain_path, tx_path, building_map_path = self.samples[sample_index]
+
+        if self.part != "train":
+            seed_material = (
+                f"{self.base_seed}:{self.part}:{Path(gain_path).name}:{sample_count}"
+            ).encode()
+            derived_seed = int.from_bytes(
+                blake2b(seed_material, digest_size=8).digest(), "big"
+            )
+            generator = Generator().manual_seed(derived_seed)
 
         gain = self.__read_image(gain_path)
         tx = self.__read_image(tx_path)
         building_map = self.__read_image(building_map_path)
-        gain_mask = self.__random_sample(gain, tx, building_map, 0.1)
+        gain_mask = self.__random_sample(
+            gain, tx, building_map, sample_count, generator
+        )
 
         label = {
             "gain": gain,
@@ -108,18 +136,17 @@ class RadioDataset(Dataset):
             gain: Tensor,
             tx: Tensor,
             building_map: Tensor,
-            sample_rate: float
+            sample_count: int,
+            generator: Generator | None,
     ) -> Tensor:
         valid_area = (tx < 0.5) & (building_map < 0.5)
         valid_indices = valid_area.flatten().nonzero().squeeze(1)
-        height, width = gain.shape[-2:]
-        sample_count = round(height * width * sample_rate) 
 
         if valid_indices.numel() < sample_count:
             raise RuntimeError("有效采样点不够")
 
         selected = valid_indices[
-            randperm(valid_indices.numel())[:sample_count]
+            randperm(valid_indices.numel(), generator=generator)[:sample_count]
         ]
 
         gain_mask = zeros_like(gain, dtype=float32)

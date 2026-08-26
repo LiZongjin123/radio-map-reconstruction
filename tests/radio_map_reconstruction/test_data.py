@@ -45,8 +45,12 @@ def test_training_sampling_is_dynamic_and_stays_in_valid_receiving_area(tmp_path
     dataset = RadioDataset(
         "train", dataset_path=tmp_path, partition="DPM", seed=17
     )
+    repeated_dataset = RadioDataset(
+        "train", dataset_path=tmp_path, partition="DPM", seed=17
+    )
 
     sampling_masks = [dataset[0][0][3] for _ in range(12)]
+    repeated_sampling_masks = [repeated_dataset[0][0][3] for _ in range(12)]
     sample_counts = [int(mask.sum().item()) for mask in sampling_masks]
 
     assert all(10 <= sample_count <= 200 for sample_count in sample_counts)
@@ -55,6 +59,12 @@ def test_training_sampling_is_dynamic_and_stays_in_valid_receiving_area(tmp_path
     assert all(set(mask.unique().tolist()) <= {0.0, 1.0} for mask in sampling_masks)
     assert len(set(sample_counts)) > 1
     assert any(not sampling_masks[0].equal(mask) for mask in sampling_masks[1:])
+    assert any(
+        not first_mask.equal(repeated_mask)
+        for first_mask, repeated_mask in zip(
+            sampling_masks, repeated_sampling_masks
+        )
+    )
 
 
 def test_validation_and_test_cover_reproducible_fixed_sampling_masks(tmp_path: Path):

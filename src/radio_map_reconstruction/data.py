@@ -33,7 +33,7 @@ class RadioDataset(Dataset):
         root = Path(dataset_path or CONFIG["dataset_path"])
         selected_partition = partition or CONFIG["partition"]
         base_seed = CONFIG["seed"] if seed is None else seed
-        self.part = part
+        self.dataset_part = part
         self.base_seed = base_seed
         self.samples = self._discover_split(root, selected_partition, base_seed, part)
 
@@ -91,12 +91,12 @@ class RadioDataset(Dataset):
         return [sample for _, samples in city_maps[start:end] for sample in samples]
 
     def __len__(self):
-        if self.part != "train":
+        if self.dataset_part != "train":
             return len(self.samples) * len(self.EVALUATION_SAMPLE_COUNTS)
         return len(self.samples)
 
     def __getitem__(self, index: int) -> tuple[Tensor, dict[str, Tensor]]:
-        if self.part == "train":
+        if self.dataset_part == "train":
             sample_index = index
             sample_count = int(randint(10, 201, ()).item())
             generator = None
@@ -108,9 +108,10 @@ class RadioDataset(Dataset):
 
         gain_path, tx_path, building_map_path = self.samples[sample_index]
 
-        if self.part != "train":
+        if self.dataset_part != "train":
             seed_material = (
-                f"{self.base_seed}:{self.part}:{Path(gain_path).name}:{sample_count}"
+                f"{self.base_seed}:{self.dataset_part}:"
+                f"{Path(gain_path).name}:{sample_count}"
             ).encode()
             derived_seed = int.from_bytes(
                 blake2b(seed_material, digest_size=8).digest(), "big"

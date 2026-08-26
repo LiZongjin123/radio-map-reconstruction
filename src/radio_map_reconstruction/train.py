@@ -1,7 +1,9 @@
+import csv
 import swanlab
+from collections.abc import Callable
 from pathlib import Path
 from torch import Tensor, inference_mode, save
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler
 from os.path import join
 from torch.nn import Module
 from torch.optim import Adam, Optimizer
@@ -102,6 +104,73 @@ def eval_one_epoch(
         rmse_by_sample_count,
     )
 
+
+def run_training(
+        *,
+        model: Module,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        criterion: Module,
+        optimizer: Optimizer,
+        scheduler: LRScheduler,
+        epoch_num: int,
+        run_dir: str | Path,
+        metric_logger: Callable[[dict[str, int | float]], None] | None = None,
+) -> None:
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    history_path = run_dir / "history.csv"
+    fieldnames = (
+        "epoch",
+        "train_loss",
+        "val_loss",
+        "val_rmse",
+        "learning_rate",
+    )
+    best_val_rmse = float("inf")
+
+    with history_path.open("w", newline="", encoding="utf-8") as history_file:
+        writer = csv.DictWriter(history_file, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for epoch in range(epoch_num):
+            learning_rate = optimizer.param_groups[0]["lr"]
+            train_loss = train_one_epoch(
+                model, train_loader, optimizer, criterion, epoch, epoch_num
+            )
+            val_loss, _, val_rmse_by_sample_count = eval_one_epoch(
+                model, val_loader, criterion, epoch, epoch_num
+            )
+            val_rmse = sum(
+                val_rmse_by_sample_count[sample_count]
+                for sample_count in RadioDataset.EVALUATION_SAMPLE_COUNTS
+            ) / len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+
+            metrics: dict[str, int | float] = {
+                "epoch": epoch + 1,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_rmse": val_rmse,
+                "learning_rate": learning_rate,
+            }
+            writer.writerow(metrics)
+            history_file.flush()
+
+            save_checkpoint(run_dir / "latest.pt", model)
+            if val_rmse < best_val_rmse:
+                best_val_rmse = val_rmse
+                save_checkpoint(run_dir / "best.pt", model)
+
+            if metric_logger is not None:
+                metric_logger({
+                    **metrics,
+                    **{
+                        f"val_rmse_{sample_count}_samples": rmse
+                        for sample_count, rmse in val_rmse_by_sample_count.items()
+                    },
+                })
+            scheduler.step()
+
 def train() -> None:
     train_data = RadioDataset("train")
     val_data = RadioDataset("val")
@@ -141,34 +210,23 @@ def train() -> None:
         eta_min=CONFIG["scheduler"]["eta_min"]
     )
 
-    lowest_val_loss = float("inf")
-    for epoch in range(CONFIG["epoch"]):
-        train_loss = train_one_epoch(res_unet, train_loader, optimizer, criterion, epoch, CONFIG["epoch"])
-        val_loss, val_rmse, val_rmse_by_sample_count = eval_one_epoch(
-            res_unet, val_loader, criterion, epoch, CONFIG["epoch"]
+    try:
+        run_training(
+            model=res_unet,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch_num=CONFIG["epoch"],
+            run_dir=ROOT / "run",
+            metric_logger=swanlab.log,
         )
-        scheduler.step()
-        swanlab.log({
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-            "val_rmse": val_rmse,
-            **{
-                f"val_rmse_{sample_count}_samples": rmse
-                for sample_count, rmse in val_rmse_by_sample_count.items()
-            },
-        })
-
-        last_checkpoint_path = join(ROOT, "run", "last.pt")
-        save_checkpoint(last_checkpoint_path, res_unet)
-        if val_loss < lowest_val_loss:
-            lowest_val_loss = val_loss
-            best_checkpoint_path = join(ROOT, "run", "best.pt")
-            save_checkpoint(best_checkpoint_path, res_unet)
-        
-    swanlab.finish()
+    finally:
+        swanlab.finish()
 
 def save_checkpoint(
-        path: str,
+        path: str | Path,
         model: Module
 ):
     Path(path).parent.mkdir(parents=True, exist_ok=True)

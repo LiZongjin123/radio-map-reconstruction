@@ -19,10 +19,9 @@ EXPECTED_PLOT_NAMES = {
 
 
 @fixture
-def plotting_workspace() -> Iterator[tuple[Path, Path]]:
+def temporary_run_dir() -> Iterator[Path]:
     with TemporaryDirectory(prefix="radio-map-reconstruction-tests-") as temp_dir:
-        run_dir = Path(temp_dir) / "run"
-        yield run_dir, run_dir / "plots"
+        yield Path(temp_dir) / "run"
 
 
 def test_plot_results_project_command_is_registered():
@@ -65,8 +64,9 @@ def write_metric_csvs(run_dir):
     )
 
 
-def test_plotting_writes_three_report_ready_png_files(plotting_workspace):
-    run_dir, plots_dir = plotting_workspace
+def test_plotting_writes_three_report_ready_png_files(temporary_run_dir):
+    run_dir = temporary_run_dir
+    plots_dir = run_dir / "plots"
     write_metric_csvs(run_dir)
 
     run_plotting(run_dir=run_dir, plots_dir=plots_dir)
@@ -81,9 +81,10 @@ def test_plotting_writes_three_report_ready_png_files(plotting_workspace):
 
 
 def test_repeated_plotting_replaces_owned_plots_and_preserves_other_files(
-    plotting_workspace,
+    temporary_run_dir,
 ):
-    run_dir, plots_dir = plotting_workspace
+    run_dir = temporary_run_dir
+    plots_dir = run_dir / "plots"
     write_metric_csvs(run_dir)
     plots_dir.mkdir(parents=True)
     unrelated_file = plots_dir / "keep.txt"
@@ -115,9 +116,10 @@ def test_repeated_plotting_replaces_owned_plots_and_preserves_other_files(
     ("history.csv", "evaluation/test_metrics.csv"),
 )
 def test_plotting_fails_clearly_when_required_csv_is_missing(
-    plotting_workspace, missing_relative_path
+    temporary_run_dir, missing_relative_path
 ):
-    run_dir, plots_dir = plotting_workspace
+    run_dir = temporary_run_dir
+    plots_dir = run_dir / "plots"
     write_metric_csvs(run_dir)
     (run_dir / missing_relative_path).unlink()
 
@@ -145,9 +147,10 @@ def test_plotting_fails_clearly_when_required_csv_is_missing(
     ),
 )
 def test_plotting_fails_clearly_when_csv_column_is_missing(
-    plotting_workspace, relative_path, fieldnames, rows, missing_column
+    temporary_run_dir, relative_path, fieldnames, rows, missing_column
 ):
-    run_dir, plots_dir = plotting_workspace
+    run_dir = temporary_run_dir
+    plots_dir = run_dir / "plots"
     write_metric_csvs(run_dir)
     write_csv(run_dir / relative_path, fieldnames, rows)
 
@@ -183,9 +186,10 @@ def test_plotting_fails_clearly_when_csv_column_is_missing(
     ),
 )
 def test_plotting_fails_clearly_when_csv_value_is_nonnumeric(
-    plotting_workspace, relative_path, fieldnames, rows, invalid_column
+    temporary_run_dir, relative_path, fieldnames, rows, invalid_column
 ):
-    run_dir, plots_dir = plotting_workspace
+    run_dir = temporary_run_dir
+    plots_dir = run_dir / "plots"
     write_metric_csvs(run_dir)
     write_csv(run_dir / relative_path, fieldnames, rows)
 

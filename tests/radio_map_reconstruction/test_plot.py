@@ -1,9 +1,12 @@
 import csv
+from collections.abc import Iterator
 from importlib.metadata import entry_points
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from matplotlib import image as mpimg
 from PIL import Image
-from pytest import approx, mark, raises
+from pytest import approx, fixture, mark, raises
 
 from radio_map_reconstruction.plot import run_plotting
 
@@ -13,6 +16,13 @@ EXPECTED_PLOT_NAMES = {
     "validation_loss_vs_epoch.png",
     "rmse_vs_sample_count.png",
 }
+
+
+@fixture
+def plotting_workspace() -> Iterator[tuple[Path, Path]]:
+    with TemporaryDirectory(prefix="radio-map-reconstruction-tests-") as temp_dir:
+        run_dir = Path(temp_dir) / "run"
+        yield run_dir, run_dir / "plots"
 
 
 def test_plot_results_project_command_is_registered():
@@ -55,9 +65,8 @@ def write_metric_csvs(run_dir):
     )
 
 
-def test_plotting_writes_three_report_ready_png_files(tmp_path):
-    run_dir = tmp_path / "run"
-    plots_dir = run_dir / "plots"
+def test_plotting_writes_three_report_ready_png_files(plotting_workspace):
+    run_dir, plots_dir = plotting_workspace
     write_metric_csvs(run_dir)
 
     run_plotting(run_dir=run_dir, plots_dir=plots_dir)
@@ -71,9 +80,10 @@ def test_plotting_writes_three_report_ready_png_files(tmp_path):
             assert image.info["dpi"] == approx((300, 300), abs=0.1)
 
 
-def test_repeated_plotting_replaces_owned_plots_and_preserves_other_files(tmp_path):
-    run_dir = tmp_path / "run"
-    plots_dir = run_dir / "plots"
+def test_repeated_plotting_replaces_owned_plots_and_preserves_other_files(
+    plotting_workspace,
+):
+    run_dir, plots_dir = plotting_workspace
     write_metric_csvs(run_dir)
     plots_dir.mkdir(parents=True)
     unrelated_file = plots_dir / "keep.txt"
@@ -105,10 +115,9 @@ def test_repeated_plotting_replaces_owned_plots_and_preserves_other_files(tmp_pa
     ("history.csv", "evaluation/test_metrics.csv"),
 )
 def test_plotting_fails_clearly_when_required_csv_is_missing(
-    tmp_path, missing_relative_path
+    plotting_workspace, missing_relative_path
 ):
-    run_dir = tmp_path / "run"
-    plots_dir = run_dir / "plots"
+    run_dir, plots_dir = plotting_workspace
     write_metric_csvs(run_dir)
     (run_dir / missing_relative_path).unlink()
 
@@ -136,10 +145,9 @@ def test_plotting_fails_clearly_when_required_csv_is_missing(
     ),
 )
 def test_plotting_fails_clearly_when_csv_column_is_missing(
-    tmp_path, relative_path, fieldnames, rows, missing_column
+    plotting_workspace, relative_path, fieldnames, rows, missing_column
 ):
-    run_dir = tmp_path / "run"
-    plots_dir = run_dir / "plots"
+    run_dir, plots_dir = plotting_workspace
     write_metric_csvs(run_dir)
     write_csv(run_dir / relative_path, fieldnames, rows)
 
@@ -175,10 +183,9 @@ def test_plotting_fails_clearly_when_csv_column_is_missing(
     ),
 )
 def test_plotting_fails_clearly_when_csv_value_is_nonnumeric(
-    tmp_path, relative_path, fieldnames, rows, invalid_column
+    plotting_workspace, relative_path, fieldnames, rows, invalid_column
 ):
-    run_dir = tmp_path / "run"
-    plots_dir = run_dir / "plots"
+    run_dir, plots_dir = plotting_workspace
     write_metric_csvs(run_dir)
     write_csv(run_dir / relative_path, fieldnames, rows)
 

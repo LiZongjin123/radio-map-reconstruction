@@ -7,7 +7,7 @@ matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 
 
-ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _read_numeric_columns(
@@ -100,4 +100,7 @@ def run_plotting(*, run_dir: str | Path, plots_dir: str | Path) -> None:
 
 
 def plot_results() -> None:
-    run_plotting(run_dir=ROOT / "run", plots_dir=ROOT / "run" / "plots")
+    run_plotting(
+        run_dir=PROJECT_ROOT / "run",
+        plots_dir=PROJECT_ROOT / "run" / "plots",
+    )

@@ -20,6 +20,7 @@ dependencies = [
 [project.scripts]
 train = "radio_map_reconstruction.train:train"
 eval = "radio_map_reconstruction.eval:eval"
+plot-results = "radio_map_reconstruction.plot:plot_results"
 
 [build-system]
 requires = ["uv_build>=0.12.0,<0.13.0"]

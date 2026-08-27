@@ -24,6 +24,10 @@ _Avoid_: Nested sampling mask
 The ground truth, sampling mask, sparse channel map, reconstructed channel map, and absolute error retained together for later visualization.
 _Avoid_: Result image, visualization output
 
+**Evaluation Bundle Figure**:
+A four-panel report figure derived from one evaluation bundle, showing the ground truth, sparse channel map, reconstructed channel map, and absolute error.
+_Avoid_: Evaluation bundle, joint image
+
 **Mean Per-Sample Normalized RMSE**:
 For each channel-map sample, normalized RMSE is computed over that sample's valid receiving area; the reported metric is the arithmetic mean of those per-sample RMSE values.
 _Avoid_: Global pixel RMSE, physical-unit RMSE

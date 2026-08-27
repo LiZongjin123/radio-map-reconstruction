@@ -14,20 +14,13 @@ from torch import (
 from torch.nn import Module
 from torch.utils.data import DataLoader, Dataset
 
+from radio_map_reconstruction.artifacts import EVALUATION_BUNDLE_CASES
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.loss import RadioMapLoss
 from radio_map_reconstruction.model import ResUnet
 from radio_map_reconstruction.train import CONFIG, eval_one_epoch
 
 ROOT = Path(__file__).resolve().parents[2]
-
-EVALUATION_BUNDLE_CASES = (
-    (0, 10),
-    (1, 50),
-    (2, 100),
-    (3, 200),
-)
-
 
 def load_checkpoint(path: str | Path) -> Module:
     checkpoint = load(path, map_location=CONFIG["device"])

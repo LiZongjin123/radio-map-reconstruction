@@ -6,7 +6,7 @@ import numpy as np
 
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
-from torch import inference_mode, load, tensor
+from torch import Tensor, inference_mode, load, tensor
 from torch.nn import Module
 from torch.utils.data import DataLoader, Dataset
 
@@ -40,11 +40,11 @@ def load_sampler_checkpoint(path: str | Path) -> Module:
 
 def _save_sampling_decision_figure(
     *,
-    sampling_score_map,
-    learned_sampling_mask,
-    valid_receiving_area,
-    building_map,
-    transmitter_map,
+    sampling_score_map: Tensor,
+    learned_sampling_mask: Tensor,
+    valid_receiving_area: Tensor,
+    building_map: Tensor,
+    transmitter_map: Tensor,
     sample_count: int,
     output_path: Path,
 ) -> None:

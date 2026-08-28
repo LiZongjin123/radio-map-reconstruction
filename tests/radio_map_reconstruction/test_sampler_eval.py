@@ -14,6 +14,13 @@ from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.sampler_eval import CONFIG, run_sampler_evaluation
 
 
+CONTROLLED_SAMPLER_TRAINING_CONFIG = {
+    "temperature": 0.1,
+    "bisection_tolerance": 1e-6,
+    "bisection_max_iterations": 64,
+}
+
+
 class DeterministicSamplerEvaluationDataset(Dataset):
     EVALUATION_SAMPLE_COUNTS = RadioDataset.EVALUATION_SAMPLE_COUNTS
 
@@ -131,11 +138,7 @@ def test_sampler_evaluation_writes_deterministic_sampling_decision_figures(
             evaluation_dir=evaluation_dir,
             batch_size=8,
             evaluation_seed=137,
-            sampler_training_config={
-                "temperature": 0.1,
-                "bisection_tolerance": 1e-6,
-                "bisection_max_iterations": 64,
-            },
+            sampler_training_config=CONTROLLED_SAMPLER_TRAINING_CONFIG,
         )
         figure_indices = dataset.requested_indices[-4:]
         return figure_indices
@@ -158,7 +161,11 @@ def test_sampler_evaluation_writes_deterministic_sampling_decision_figures(
         expected_names
     )
     assert first_indices == second_indices
-    assert len({index // len(RadioDataset.EVALUATION_SAMPLE_COUNTS) for index in first_indices}) == 4
+    selected_base_samples = {
+        index // len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+        for index in first_indices
+    }
+    assert len(selected_base_samples) == 4
     assert [
         RadioDataset.EVALUATION_SAMPLE_COUNTS[
             index % len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
@@ -218,11 +225,7 @@ def test_sampler_evaluation_is_reproducible_and_restores_runtime_settings(
             evaluation_dir=evaluation_dir,
             batch_size=4,
             evaluation_seed=137,
-            sampler_training_config={
-                "temperature": 0.1,
-                "bisection_tolerance": 1e-6,
-                "bisection_max_iterations": 64,
-            },
+            sampler_training_config=CONTROLLED_SAMPLER_TRAINING_CONFIG,
         )
         csv_content = (evaluation_dir / "test_metrics.csv").read_text(
             encoding="utf-8"

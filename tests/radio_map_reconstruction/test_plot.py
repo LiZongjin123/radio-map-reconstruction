@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import numpy as np
+import radio_map_reconstruction.plot as plot_module
 from matplotlib import image as mpimg
 from matplotlib.colors import to_rgba
 from matplotlib.figure import Figure
@@ -12,6 +13,7 @@ from PIL import Image
 from pytest import approx, fixture, mark, raises
 
 from radio_map_reconstruction.plot import run_plotting
+from radio_map_reconstruction.config import CONFIG
 
 
 EXPECTED_PLOT_NAMES = {
@@ -40,6 +42,28 @@ def test_plot_results_project_command_is_registered():
 
     assert len(matching_commands) == 1
     assert matching_commands[0].value == "radio_map_reconstruction.plot:plot_results"
+
+
+def test_plot_results_reads_and_writes_only_in_reconstructor_run_subtree(
+    monkeypatch, tmp_path
+):
+    reconstructor_run_dir = tmp_path / "run" / "reconstructor"
+    monkeypatch.setitem(
+        CONFIG["reconstructor"], "run_dir", str(reconstructor_run_dir)
+    )
+    captured_arguments = []
+    monkeypatch.setattr(
+        plot_module,
+        "run_plotting",
+        lambda **kwargs: captured_arguments.append(kwargs),
+    )
+
+    plot_module.plot_results()
+
+    assert captured_arguments == [{
+        "run_dir": reconstructor_run_dir,
+        "plots_dir": reconstructor_run_dir / "plots",
+    }]
 
 
 def write_csv(path, fieldnames, rows):

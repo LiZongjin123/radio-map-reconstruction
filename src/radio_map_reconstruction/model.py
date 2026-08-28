@@ -96,6 +96,8 @@ class ResUnet(Module):
     ) -> None:
         super().__init__()
 
+        self.in_channels = in_channels
+
         feature_channels = []
         for i in range(5):
             feature_channels.append(base_channels * (2 ** i))
@@ -125,8 +127,10 @@ class ResUnet(Module):
         if input.ndim != 4:
             raise ValueError("输入数据的维度数量不等于4")
 
-        if input.shape[1] != 4:
-            raise ValueError("输入数据的通道数不等于4")
+        if input.shape[1] != self.in_channels:
+            raise ValueError(
+                f"输入数据的通道数不等于{self.in_channels}"
+            )
 
         skip1 = output = self.input_block(input)
 

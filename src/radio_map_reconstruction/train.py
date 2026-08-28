@@ -4,20 +4,15 @@ from collections.abc import Callable
 from pathlib import Path
 from torch import Tensor, inference_mode, save
 from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler
-from os.path import join
 from torch.nn import Module
 from torch.optim import Adam, Optimizer
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
-from yaml import safe_load
+from radio_map_reconstruction.config import CONFIG, reconstructor_run_dir
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.loss import RadioMapLoss, normalized_mse_per_sample
 from radio_map_reconstruction.model import ResUnet
-
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = join(ROOT, "config.yml")
-with open(CONFIG_PATH, encoding="utf-8") as file:
-    CONFIG = safe_load(file)
+from radio_map_reconstruction.util import delete_reconstructor_run
 
 def train_one_epoch(
         model: Module,
@@ -33,8 +28,11 @@ def train_one_epoch(
     total_samples = 0
     for inputs, targets in progress:
         optimizer.zero_grad()
-        inputs = inputs.to(CONFIG["device"])
-        targets = {name: value.to(CONFIG["device"]) for name, value in targets.items()}
+        inputs = inputs.to(CONFIG["runtime"]["device"])
+        targets = {
+            name: value.to(CONFIG["runtime"]["device"])
+            for name, value in targets.items()
+        }
         outputs = model(inputs)
         loss = criterion(outputs, targets)
         loss.backward()
@@ -64,8 +62,11 @@ def eval_one_epoch(
     case_counts_by_sample_count: dict[int, int] = {}
     with inference_mode():
         for inputs, targets in progress:
-            inputs = inputs.to(CONFIG["device"])
-            targets = {name: value.to(CONFIG["device"]) for name, value in targets.items()}
+            inputs = inputs.to(CONFIG["runtime"]["device"])
+            targets = {
+                name: value.to(CONFIG["runtime"]["device"])
+                for name, value in targets.items()
+            }
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             batch_size = inputs.shape[0]
@@ -176,43 +177,53 @@ def run_training(
                 })
             scheduler.step()
 
+
 def train() -> None:
+    data_loader_config = CONFIG["dataset"]["data_loader"]
+    training_config = CONFIG["reconstructor"]["training"]
+    run_dir = reconstructor_run_dir()
+    delete_reconstructor_run()
+    run_dir.mkdir(parents=True)
     train_data = RadioDataset("train")
     val_data = RadioDataset("val")
 
     train_loader = DataLoader(
         dataset=train_data,
-        num_workers=CONFIG["data_loader"]["num_workers"],
-        batch_size=CONFIG["data_loader"]["batch_size"],
+        num_workers=data_loader_config["num_workers"],
+        batch_size=data_loader_config["batch_size"],
         shuffle=True,
         pin_memory=True
     )
     val_loader = DataLoader(
         dataset=val_data,
-        num_workers=CONFIG["data_loader"]["num_workers"],
-        batch_size=CONFIG["data_loader"]["batch_size"],
+        num_workers=data_loader_config["num_workers"],
+        batch_size=data_loader_config["batch_size"],
         shuffle=True,
         pin_memory=True
     )
 
     swanlab.init(
-        project=CONFIG["swanlab"]["project"],
-        workspace=CONFIG["swanlab"]["workspace"],
+        project=CONFIG["experiment_logging"]["project"],
+        workspace=CONFIG["experiment_logging"]["workspace"],
         config={
-            "learning_rate": CONFIG["optimizer"]["init_lr"],
-            "epoch": CONFIG["epoch"],
-            "T_max": CONFIG["scheduler"]["T_max"],
-            "eta_min": CONFIG["scheduler"]["eta_min"]
+            "learning_rate": training_config["optimizer"]["init_lr"],
+            "epoch": training_config["epochs"],
+            "T_max": training_config["scheduler"]["T_max"],
+            "eta_min": training_config["scheduler"]["eta_min"],
         }
     )
 
-    res_unet = ResUnet().to(CONFIG["device"])
+    res_unet = ResUnet(**CONFIG["reconstructor"]["model"]).to(
+        CONFIG["runtime"]["device"]
+    )
     criterion = RadioMapLoss()
-    optimizer = Adam(res_unet.parameters(), lr=CONFIG["optimizer"]["init_lr"])
+    optimizer = Adam(
+        res_unet.parameters(), lr=training_config["optimizer"]["init_lr"]
+    )
     scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=CONFIG["scheduler"]["T_max"],
-        eta_min=CONFIG["scheduler"]["eta_min"]
+        T_max=training_config["scheduler"]["T_max"],
+        eta_min=training_config["scheduler"]["eta_min"],
     )
 
     try:
@@ -223,8 +234,8 @@ def train() -> None:
             criterion=criterion,
             optimizer=optimizer,
             scheduler=scheduler,
-            epoch_num=CONFIG["epoch"],
-            run_dir=ROOT / "run",
+            epoch_num=training_config["epochs"],
+            run_dir=run_dir,
             metric_logger=swanlab.log,
         )
     finally:

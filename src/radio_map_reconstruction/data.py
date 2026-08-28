@@ -6,17 +6,13 @@ from torch import Generator, Tensor, cat, float32, randint, randperm, zeros_like
 from torch.utils.data import Dataset
 from torchvision.io import decode_image, ImageReadMode
 from torchvision.transforms.v2.functional import to_dtype
-from yaml import safe_load
 
-ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = ROOT / "config.yml"
-with CONFIG_PATH.open(encoding="utf-8") as file:
-    CONFIG = safe_load(file)
+from radio_map_reconstruction.config import CONFIG
 
 
 class RadioDataset(Dataset):
 
-    EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
+    EVALUATION_SAMPLE_COUNTS = tuple(CONFIG["evaluation"]["sample_counts"])
 
     def __init__(
         self,
@@ -30,9 +26,9 @@ class RadioDataset(Dataset):
         if part not in {"train", "val", "test"}:
             raise ValueError("part must be 'train', 'val', or 'test'")
 
-        root = Path(dataset_path or CONFIG["dataset_path"])
-        selected_partition = partition or CONFIG["partition"]
-        base_seed = CONFIG["seed"] if seed is None else seed
+        root = Path(dataset_path or CONFIG["dataset"]["path"])
+        selected_partition = partition or CONFIG["dataset"]["partition"]
+        base_seed = CONFIG["runtime"]["seed"] if seed is None else seed
         self.dataset_part = part
         self.base_seed = base_seed
         self.samples = self._discover_split(root, selected_partition, base_seed, part)

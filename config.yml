@@ -1,18 +1,46 @@
-dataset_path: C:\Users\LiZongjin\RadioMapSeer
-seed: 42
-device: cuda
-partition: DPM
-epoch: 20
-data_loader:
-  num_workers: 16
+runtime:
+  seed: 42
+  device: cuda
+  run_dir: run
+
+dataset:
+  path: C:\Users\LiZongjin\RadioMapSeer
+  partition: DPM
+  data_loader:
+    num_workers: 16
+    batch_size: 32
+
+reconstructor:
+  run_dir: run/reconstructor
+  model:
+    in_channels: 4
+    out_channels: 1
+    base_channels: 32
+  training:
+    epochs: 20
+    optimizer:
+      init_lr: 0.0003
+    scheduler:
+      T_max: 20
+      eta_min: 0.000001
+
+sampler:
+  run_dir: run/sampler
+  model:
+    in_channels: 2
+    out_channels: 1
+    base_channels: 16
+  training:
+    minimum_sample_count: 10
+    maximum_sample_count: 200
+    temperature: 0.1
+    bisection_tolerance: 0.000001
+    bisection_max_iterations: 64
+
+evaluation:
   batch_size: 32
-optimizer:
-  init_lr: 0.0003
-scheduler:
-  T_max: 20
-  eta_min: 0.000001
-swanlab:
+  sample_counts: [10, 20, 30, 50, 75, 100, 125, 150, 175, 200]
+
+experiment_logging:
   project: radio-map-reconstruction
   workspace: LiZongjin
-  architecture: ResUNet
-  

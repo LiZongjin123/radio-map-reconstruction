@@ -15,16 +15,17 @@ from torch.nn import Module
 from torch.utils.data import DataLoader, Dataset
 
 from radio_map_reconstruction.artifacts import EVALUATION_BUNDLE_CASES
+from radio_map_reconstruction.config import CONFIG, reconstructor_run_dir
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.loss import RadioMapLoss
 from radio_map_reconstruction.model import ResUnet
-from radio_map_reconstruction.train import CONFIG, eval_one_epoch
-
-ROOT = Path(__file__).resolve().parents[2]
+from radio_map_reconstruction.train import eval_one_epoch
 
 def load_checkpoint(path: str | Path) -> Module:
-    checkpoint = load(path, map_location=CONFIG["device"])
-    model = ResUnet().to(CONFIG["device"])
+    checkpoint = load(path, map_location=CONFIG["runtime"]["device"])
+    model = ResUnet(**CONFIG["reconstructor"]["model"]).to(
+        CONFIG["runtime"]["device"]
+    )
     model.load_state_dict(checkpoint["model_state_dict"])
     return model
 
@@ -109,7 +110,9 @@ def _write_evaluation_bundles(
             sample_count_index = sample_counts.index(sample_count)
             dataset_index = sample_index * len(sample_counts) + sample_count_index
             inputs, targets = test_dataset[dataset_index]
-            device_inputs = inputs.unsqueeze(0).to(CONFIG["device"])
+            device_inputs = inputs.unsqueeze(0).to(
+                CONFIG["runtime"]["device"]
+            )
             output = model(device_inputs)[0, 0].clamp(0, 1)
 
             ground_truth = targets["gain"][0].to(output.device)
@@ -141,14 +144,15 @@ def _write_evaluation_bundles(
 
 
 def eval() -> None:
+    run_dir = reconstructor_run_dir()
     test_dataset = RadioDataset("test")
-    model = load_checkpoint(ROOT / "run" / "best.pt")
+    model = load_checkpoint(run_dir / "best.pt")
     test_loss, test_rmse, rmse_by_sample_count = run_evaluation(
         model=model,
         test_dataset=test_dataset,
         criterion=RadioMapLoss(),
-        evaluation_dir=ROOT / "run" / "evaluation",
-        batch_size=CONFIG["data_loader"]["batch_size"],
+        evaluation_dir=run_dir / "evaluation",
+        batch_size=CONFIG["evaluation"]["batch_size"],
     )
 
     print(f"test loss: {test_loss:.6f}")

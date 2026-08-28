@@ -1,6 +1,7 @@
 import csv
 
-from pytest import approx
+import radio_map_reconstruction.train as train_module
+from pytest import approx, raises
 from torch import Tensor, load, tensor
 from torch.nn import Module, Parameter
 from torch.optim.lr_scheduler import ExponentialLR
@@ -14,6 +15,7 @@ from radio_map_reconstruction.train import (
     run_training,
     train_one_epoch,
 )
+from radio_map_reconstruction.util import delete_reconstructor_run
 
 EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
 
@@ -61,7 +63,7 @@ def make_orchestration_loaders() -> tuple[DataLoader, DataLoader]:
 
 
 def test_train_epoch_loss_weights_samples_equally_across_uneven_batches(monkeypatch):
-    monkeypatch.setitem(CONFIG, "device", "cpu")
+    monkeypatch.setitem(CONFIG["runtime"], "device", "cpu")
     samples = [
         (
             tensor([[[prediction]]]),
@@ -86,7 +88,7 @@ def test_train_epoch_loss_weights_samples_equally_across_uneven_batches(monkeypa
 def test_eval_epoch_reports_unclipped_loss_and_clipped_rmse_by_sample_count(
     monkeypatch,
 ):
-    monkeypatch.setitem(CONFIG, "device", "cpu")
+    monkeypatch.setitem(CONFIG["runtime"], "device", "cpu")
     samples = []
     for map_index in range(2):
         for count_index, sample_count in enumerate(EVALUATION_SAMPLE_COUNTS):
@@ -128,7 +130,7 @@ def test_eval_epoch_reports_unclipped_loss_and_clipped_rmse_by_sample_count(
 def test_training_writes_history_and_selects_best_average_rmse_without_clearing_run_dir(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setitem(CONFIG, "device", "cpu")
+    monkeypatch.setitem(CONFIG["runtime"], "device", "cpu")
     sentinel = tmp_path / "keep.txt"
     sentinel.write_text("keep", encoding="utf-8")
 
@@ -177,3 +179,88 @@ def test_training_writes_history_and_selects_best_average_rmse_without_clearing_
         0.0875, abs=1e-7
     )
     assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_train_owns_and_cleans_only_the_reconstructor_run_subtree(
+    monkeypatch, tmp_path
+):
+    run_root = tmp_path / "run"
+    reconstructor_run_dir = run_root / "reconstructor"
+    sampler_sentinel = run_root / "sampler" / "keep.txt"
+    legacy_checkpoint = run_root / "best.pt"
+    stale_reconstructor_artifact = reconstructor_run_dir / "stale.txt"
+    for path in (sampler_sentinel, legacy_checkpoint, stale_reconstructor_artifact):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("keep", encoding="utf-8")
+
+    monkeypatch.setitem(
+        CONFIG["reconstructor"], "run_dir", str(reconstructor_run_dir)
+    )
+    monkeypatch.setitem(CONFIG["runtime"], "run_dir", str(run_root))
+    monkeypatch.setitem(CONFIG["runtime"], "device", "cpu")
+    monkeypatch.setattr(train_module, "RadioDataset", lambda part: part)
+    monkeypatch.setattr(train_module, "DataLoader", lambda **kwargs: kwargs)
+    monkeypatch.setattr(
+        train_module, "ResUnet", lambda **kwargs: ConstantPredictionModel(0.0)
+    )
+    monkeypatch.setattr(train_module.swanlab, "init", lambda **kwargs: None)
+    monkeypatch.setattr(train_module.swanlab, "log", lambda metrics: None)
+    monkeypatch.setattr(train_module.swanlab, "finish", lambda: None)
+    captured_run_dirs = []
+
+    def capture_run_directory(**kwargs):
+        captured_run_dirs.append(kwargs["run_dir"])
+
+    monkeypatch.setattr(train_module, "run_training", capture_run_directory)
+
+    train_module.train()
+
+    assert captured_run_dirs == [reconstructor_run_dir]
+    assert not stale_reconstructor_artifact.exists()
+    assert sampler_sentinel.read_text(encoding="utf-8") == "keep"
+    assert legacy_checkpoint.read_text(encoding="utf-8") == "keep"
+
+
+def test_reconstructor_cleanup_rejects_the_run_root(monkeypatch, tmp_path):
+    run_root = tmp_path / "run"
+    sampler_sentinel = run_root / "sampler" / "keep.txt"
+    legacy_checkpoint = run_root / "best.pt"
+    sampler_sentinel.parent.mkdir(parents=True)
+    sampler_sentinel.write_text("sampler", encoding="utf-8")
+    legacy_checkpoint.write_text("legacy", encoding="utf-8")
+
+    monkeypatch.setitem(CONFIG["runtime"], "run_dir", str(run_root))
+    monkeypatch.setitem(CONFIG["reconstructor"], "run_dir", str(run_root))
+    monkeypatch.setitem(
+        CONFIG["sampler"], "run_dir", str(run_root / "sampler")
+    )
+
+    with raises(ValueError, match="must be an isolated child"):
+        delete_reconstructor_run()
+
+    assert sampler_sentinel.read_text(encoding="utf-8") == "sampler"
+    assert legacy_checkpoint.read_text(encoding="utf-8") == "legacy"
+
+
+def test_reconstructor_cleanup_rejects_a_sampler_descendant(
+    monkeypatch, tmp_path
+):
+    run_root = tmp_path / "run"
+    sampler_run_dir = run_root / "sampler"
+    overlapping_reconstructor_dir = sampler_run_dir / "reconstructor"
+    sampler_artifact = overlapping_reconstructor_dir / "sampler-owned.txt"
+    sampler_artifact.parent.mkdir(parents=True)
+    sampler_artifact.write_text("sampler", encoding="utf-8")
+
+    monkeypatch.setitem(CONFIG["runtime"], "run_dir", str(run_root))
+    monkeypatch.setitem(
+        CONFIG["reconstructor"],
+        "run_dir",
+        str(overlapping_reconstructor_dir),
+    )
+    monkeypatch.setitem(CONFIG["sampler"], "run_dir", str(sampler_run_dir))
+
+    with raises(ValueError, match="must be an isolated child"):
+        delete_reconstructor_run()
+
+    assert sampler_artifact.read_text(encoding="utf-8") == "sampler"

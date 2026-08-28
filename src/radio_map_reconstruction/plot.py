@@ -10,9 +10,9 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import Normalize
 
 from radio_map_reconstruction.artifacts import EVALUATION_BUNDLE_SAMPLE_COUNTS
+from radio_map_reconstruction.config import CONFIG, reconstructor_run_dir
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_BUNDLE_FIELDS = {
     "sample_count",
     "ground_truth",
@@ -291,7 +291,8 @@ def run_plotting(*, run_dir: str | Path, plots_dir: str | Path) -> None:
 
 
 def plot_results() -> None:
+    run_dir = reconstructor_run_dir()
     run_plotting(
-        run_dir=PROJECT_ROOT / "run",
-        plots_dir=PROJECT_ROOT / "run" / "plots",
+        run_dir=run_dir,
+        plots_dir=run_dir / "plots",
     )

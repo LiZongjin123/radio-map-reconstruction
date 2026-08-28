@@ -1,6 +1,7 @@
 import csv
 
 import numpy as np
+import radio_map_reconstruction.eval as eval_module
 from pytest import approx
 from torch import Tensor, are_deterministic_algorithms_enabled, tensor
 from torch.nn import Module, Parameter
@@ -66,7 +67,7 @@ def test_evaluation_writes_reproducible_metrics_and_bundles_without_png(
     deterministic_algorithms_were_enabled = (
         are_deterministic_algorithms_enabled()
     )
-    monkeypatch.setitem(CONFIG, "device", "cpu")
+    monkeypatch.setitem(CONFIG["runtime"], "device", "cpu")
     evaluation_dir = tmp_path / "evaluation"
     evaluation_dir.mkdir()
     sentinel = evaluation_dir / "keep.txt"
@@ -141,3 +142,48 @@ def test_evaluation_writes_reproducible_metrics_and_bundles_without_png(
         are_deterministic_algorithms_enabled()
         == deterministic_algorithms_were_enabled
     )
+
+
+def test_eval_loads_only_the_new_reconstructor_best_checkpoint(
+    monkeypatch, tmp_path
+):
+    run_root = tmp_path / "run"
+    reconstructor_run_dir = run_root / "reconstructor"
+    legacy_checkpoint = run_root / "best.pt"
+    legacy_checkpoint.parent.mkdir(parents=True)
+    legacy_checkpoint.write_text("legacy", encoding="utf-8")
+
+    monkeypatch.setitem(
+        CONFIG["reconstructor"], "run_dir", str(reconstructor_run_dir)
+    )
+
+    class FakeRadioDataset:
+        EVALUATION_SAMPLE_COUNTS = RadioDataset.EVALUATION_SAMPLE_COUNTS
+
+        def __init__(self, part):
+            self.part = part
+
+    monkeypatch.setattr(eval_module, "RadioDataset", FakeRadioDataset)
+    loaded_paths = []
+    monkeypatch.setattr(
+        eval_module,
+        "load_checkpoint",
+        lambda path: loaded_paths.append(path) or OutOfRangeModel(),
+    )
+    captured_evaluation_dirs = []
+
+    def capture_evaluation(**kwargs):
+        captured_evaluation_dirs.append(kwargs["evaluation_dir"])
+        metrics = {
+            sample_count: 0.0
+            for sample_count in RadioDataset.EVALUATION_SAMPLE_COUNTS
+        }
+        return 0.0, 0.0, metrics
+
+    monkeypatch.setattr(eval_module, "run_evaluation", capture_evaluation)
+
+    eval_module.eval()
+
+    assert loaded_paths == [reconstructor_run_dir / "best.pt"]
+    assert captured_evaluation_dirs == [reconstructor_run_dir / "evaluation"]
+    assert legacy_checkpoint.read_text(encoding="utf-8") == "legacy"

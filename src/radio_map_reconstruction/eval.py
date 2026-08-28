@@ -1,4 +1,6 @@
 import csv
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +23,30 @@ from radio_map_reconstruction.loss import RadioMapLoss
 from radio_map_reconstruction.model import ResUnet
 from radio_map_reconstruction.train import eval_one_epoch
 
+
+@contextmanager
+def deterministic_evaluation_runtime() -> Iterator[None]:
+    deterministic_algorithms_were_enabled = (
+        are_deterministic_algorithms_enabled()
+    )
+    deterministic_warn_only_was_enabled = (
+        is_deterministic_algorithms_warn_only_enabled()
+    )
+    cudnn_deterministic_was_enabled = backends.cudnn.deterministic
+    cudnn_benchmark_was_enabled = backends.cudnn.benchmark
+    use_deterministic_algorithms(True)
+    backends.cudnn.deterministic = True
+    backends.cudnn.benchmark = False
+    try:
+        yield
+    finally:
+        use_deterministic_algorithms(
+            deterministic_algorithms_were_enabled,
+            warn_only=deterministic_warn_only_was_enabled,
+        )
+        backends.cudnn.deterministic = cudnn_deterministic_was_enabled
+        backends.cudnn.benchmark = cudnn_benchmark_was_enabled
+
 def load_checkpoint(path: str | Path) -> Module:
     checkpoint = load(path, map_location=CONFIG["runtime"]["device"])
     model = ResUnet(**CONFIG["reconstructor"]["model"]).to(
@@ -38,18 +64,7 @@ def run_evaluation(
     evaluation_dir: str | Path,
     batch_size: int,
 ) -> tuple[float, float, dict[int, float]]:
-    deterministic_algorithms_were_enabled = (
-        are_deterministic_algorithms_enabled()
-    )
-    deterministic_warn_only_was_enabled = (
-        is_deterministic_algorithms_warn_only_enabled()
-    )
-    cudnn_deterministic_was_enabled = backends.cudnn.deterministic
-    cudnn_benchmark_was_enabled = backends.cudnn.benchmark
-    use_deterministic_algorithms(True)
-    backends.cudnn.deterministic = True
-    backends.cudnn.benchmark = False
-    try:
+    with deterministic_evaluation_runtime():
         evaluation_dir = Path(evaluation_dir)
         evaluation_dir.mkdir(parents=True, exist_ok=True)
         test_loader = DataLoader(
@@ -63,19 +78,12 @@ def run_evaluation(
         test_loss, test_rmse, rmse_by_sample_count = eval_one_epoch(
             model, test_loader, criterion, epoch=0, epoch_num=1
         )
-        _write_test_metrics(evaluation_dir, rmse_by_sample_count)
+        write_test_metrics(evaluation_dir, rmse_by_sample_count)
         _write_evaluation_bundles(evaluation_dir, model, test_dataset)
         return test_loss, test_rmse, rmse_by_sample_count
-    finally:
-        use_deterministic_algorithms(
-            deterministic_algorithms_were_enabled,
-            warn_only=deterministic_warn_only_was_enabled,
-        )
-        backends.cudnn.deterministic = cudnn_deterministic_was_enabled
-        backends.cudnn.benchmark = cudnn_benchmark_was_enabled
 
 
-def _write_test_metrics(
+def write_test_metrics(
     evaluation_dir: Path,
     rmse_by_sample_count: dict[int, float],
 ) -> None:

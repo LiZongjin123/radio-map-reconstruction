@@ -21,6 +21,7 @@ dependencies = [
 train = "radio_map_reconstruction.train:train"
 train-sampler = "radio_map_reconstruction.sampler_train:train_sampler"
 eval = "radio_map_reconstruction.eval:eval"
+eval-sampler = "radio_map_reconstruction.sampler_eval:eval_sampler"
 plot-results = "radio_map_reconstruction.plot:plot_results"
 
 [build-system]

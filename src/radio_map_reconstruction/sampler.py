@@ -191,7 +191,7 @@ def _soft_top_k(
 
             threshold = ((lower + upper) / 2).detach()
 
-        gradient_limit = torch.finfo(scores.dtype).max / 4
+        gradient_limit = torch.finfo(scores.dtype).max
         soft_values = _TemperatureSigmoid.apply(
             centered_scores,
             threshold,

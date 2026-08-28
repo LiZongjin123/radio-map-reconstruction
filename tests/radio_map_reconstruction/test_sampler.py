@@ -113,25 +113,26 @@ def test_straight_through_top_k_reports_sample_specific_invalid_inputs():
 
 def test_straight_through_top_k_stays_finite_for_extreme_finite_scores():
     extreme = torch.finfo(torch.float64).max
-    scores = torch.tensor(
-        [[[[extreme, -extreme], [extreme, -extreme]]]],
-        dtype=torch.float64,
-        requires_grad=True,
-    )
+    for sample_count in (1, 2, 3):
+        scores = torch.tensor(
+            [[[[extreme, -extreme], [extreme, -extreme]]]],
+            dtype=torch.float64,
+            requires_grad=True,
+        )
 
-    learned_sampling_mask = straight_through_top_k(
-        scores,
-        torch.ones_like(scores, dtype=torch.bool),
-        torch.tensor([2]),
-        temperature=0.1,
-        tolerance=1e-6,
-        max_iterations=64,
-    )
-    learned_sampling_mask.sum().backward()
+        learned_sampling_mask = straight_through_top_k(
+            scores,
+            torch.ones_like(scores, dtype=torch.bool),
+            torch.tensor([sample_count]),
+            temperature=0.1,
+            tolerance=1e-6,
+            max_iterations=64,
+        )
+        learned_sampling_mask.sum().backward()
 
-    assert torch.isfinite(learned_sampling_mask).all()
-    assert scores.grad is not None
-    assert torch.isfinite(scores.grad).all()
+        assert torch.isfinite(learned_sampling_mask).all()
+        assert scores.grad is not None
+        assert torch.isfinite(scores.grad).all()
 
 
 def test_sampler_uses_building_then_transmitter_input_and_sixteen_base_channels():

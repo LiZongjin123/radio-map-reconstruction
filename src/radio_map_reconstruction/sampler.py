@@ -124,10 +124,15 @@ def _soft_top_k(
         ranked_indices = torch.argsort(
             valid_scores.detach(), descending=True, stable=True
         )
-        reference = valid_scores.detach()[ranked_indices[sample_count - 1]]
-        scale = valid_scores.detach().abs().max().clamp_min(1)
-        normalized_differences = valid_scores / scale - reference / scale
-        normalized_padding = padding / scale
+        selection_boundary_score = valid_scores.detach()[
+            ranked_indices[sample_count - 1]
+        ]
+        score_scale = valid_scores.detach().abs().max().clamp_min(1)
+        normalized_differences = (
+            valid_scores / score_scale
+            - selection_boundary_score / score_scale
+        )
+        normalized_padding = padding / score_scale
         far_above = normalized_differences.detach() > normalized_padding
         far_below = normalized_differences.detach() < -normalized_padding
         near_reference = ~(far_above | far_below)
@@ -136,7 +141,7 @@ def _soft_top_k(
         centered_scores[far_above] = padding
         centered_scores[far_below] = -padding
         centered_scores[near_reference] = (
-            normalized_differences[near_reference] * scale
+            valid_scores[near_reference] - selection_boundary_score
         )
 
         with torch.no_grad():

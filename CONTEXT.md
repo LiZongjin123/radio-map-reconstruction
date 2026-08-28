@@ -20,6 +20,22 @@ _Avoid_: Point map
 A sampling mask that is reused for the same channel map and sample count across repeated evaluations. Masks for different sample counts are independently sampled and need not contain one another.
 _Avoid_: Nested sampling mask
 
+**Sampling Score Map**:
+An unconstrained, single-channel score map produced from the building map and transmitter map. Scores define preference only within the valid receiving area and do not depend on the requested sample count.
+_Avoid_: Probability map, channel map
+
+**Ranked Sampling Policy**:
+A one-shot policy that orders the valid receiving area by a K-independent sampling score map. Selecting prefixes of this order for increasing sample counts produces nested learned sampling masks.
+_Avoid_: Adaptive sampling policy, K-conditioned policy
+
+**Learned Sampling Mask**:
+A binary sampling mask containing exactly K valid sampling points chosen by a ranked sampling policy. Learned sampling masks for increasing K are nested and are distinct from independently drawn random fixed sampling masks.
+_Avoid_: Fixed sampling mask, random sampling mask
+
+**Sampling Decision Figure**:
+A two-panel report figure showing a sampling score map on the valid receiving area and the corresponding learned sampling mask together with the transmitter and building map.
+_Avoid_: Evaluation bundle figure
+
 **Evaluation Bundle**:
 The ground truth, sampling mask, sparse channel map, reconstructed channel map, and absolute error retained together for later visualization.
 _Avoid_: Result image, visualization output

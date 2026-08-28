@@ -1,8 +1,11 @@
 import csv
+from pathlib import Path
 
 import radio_map_reconstruction.eval as eval_module
 import radio_map_reconstruction.sampler_eval as sampler_eval_module
 import torch
+import numpy as np
+from matplotlib.figure import Figure
 from torch import Tensor, tensor
 from torch.nn import Module, Parameter
 from torch.utils.data import Dataset
@@ -18,10 +21,12 @@ class DeterministicSamplerEvaluationDataset(Dataset):
         self.part = part
 
     def __len__(self) -> int:
-        return len(self.EVALUATION_SAMPLE_COUNTS)
+        return 4 * len(self.EVALUATION_SAMPLE_COUNTS)
 
     def __getitem__(self, index: int) -> tuple[Tensor, dict[str, Tensor]]:
-        sample_count = self.EVALUATION_SAMPLE_COUNTS[index]
+        sample_count = self.EVALUATION_SAMPLE_COUNTS[
+            index % len(self.EVALUATION_SAMPLE_COUNTS)
+        ]
         dense_target = torch.full((1, 1, 202), 0.5)
         transmitter_map = torch.zeros_like(dense_target)
         building_map = torch.zeros_like(dense_target)
@@ -64,6 +69,124 @@ class RecordingOutOfRangeReconstructor(Module):
         )
 
 
+class SamplingDecisionDataset(Dataset):
+    EVALUATION_SAMPLE_COUNTS = RadioDataset.EVALUATION_SAMPLE_COUNTS
+
+    def __init__(self) -> None:
+        self.requested_indices: list[int] = []
+
+    def __len__(self) -> int:
+        return 6 * len(self.EVALUATION_SAMPLE_COUNTS)
+
+    def __getitem__(self, index: int) -> tuple[Tensor, dict[str, Tensor]]:
+        self.requested_indices.append(index)
+        base_sample_index, sample_count_index = divmod(
+            index, len(self.EVALUATION_SAMPLE_COUNTS)
+        )
+        sample_count = self.EVALUATION_SAMPLE_COUNTS[sample_count_index]
+        dense_target = torch.full((1, 1, 202), 0.5)
+        transmitter_map = torch.zeros_like(dense_target)
+        transmitter_map[..., base_sample_index] = 1
+        building_map = torch.zeros_like(dense_target)
+        building_map[..., 6] = 1
+        valid_receiving_area = (transmitter_map < 0.5) & (building_map < 0.5)
+        valid_indices = valid_receiving_area.flatten().nonzero().squeeze(1)
+        fixed_sampling_mask = torch.zeros_like(dense_target)
+        fixed_sampling_mask.flatten()[valid_indices[:sample_count]] = 1
+        inputs = torch.cat(
+            (
+                dense_target * fixed_sampling_mask,
+                transmitter_map,
+                building_map,
+                fixed_sampling_mask,
+            )
+        )
+        return inputs, {
+            "gain": dense_target,
+            "mask": valid_receiving_area,
+        }
+
+
+def test_sampler_evaluation_writes_deterministic_sampling_decision_figures(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setitem(CONFIG["runtime"], "device", "cpu")
+    captured_figures: dict[Path, Figure] = {}
+    original_savefig = Figure.savefig
+
+    def capture_figure(figure, output_path, *args, **kwargs):
+        if Path(output_path).name.startswith("sampling_decision_"):
+            captured_figures[Path(output_path)] = figure
+            figure.canvas.draw()
+        return original_savefig(figure, output_path, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", capture_figure)
+
+    def run_once(evaluation_dir):
+        dataset = SamplingDecisionDataset()
+        run_sampler_evaluation(
+            sampler=DeterministicSampler(),
+            reconstructor=RecordingOutOfRangeReconstructor(),
+            test_dataset=dataset,
+            evaluation_dir=evaluation_dir,
+            batch_size=8,
+            evaluation_seed=137,
+            sampler_training_config={
+                "temperature": 0.1,
+                "bisection_tolerance": 1e-6,
+                "bisection_max_iterations": 64,
+            },
+        )
+        figure_indices = dataset.requested_indices[-4:]
+        return figure_indices
+
+    first_dir = tmp_path / "first" / "sampler" / "evaluation"
+    second_dir = tmp_path / "second" / "sampler" / "evaluation"
+    first_indices = run_once(first_dir)
+    second_indices = run_once(second_dir)
+
+    expected_names = {
+        "sampling_decision_10_samples.png",
+        "sampling_decision_50_samples.png",
+        "sampling_decision_100_samples.png",
+        "sampling_decision_200_samples.png",
+    }
+    assert {path.name for path in first_dir.glob("sampling_decision_*.png")} == (
+        expected_names
+    )
+    assert {path.name for path in second_dir.glob("sampling_decision_*.png")} == (
+        expected_names
+    )
+    assert first_indices == second_indices
+    assert len({index // len(RadioDataset.EVALUATION_SAMPLE_COUNTS) for index in first_indices}) == 4
+    assert [
+        RadioDataset.EVALUATION_SAMPLE_COUNTS[
+            index % len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+        ]
+        for index in first_indices
+    ] == [10, 50, 100, 200]
+    for name in expected_names:
+        assert (first_dir / name).read_bytes() == (second_dir / name).read_bytes()
+
+    figure = captured_figures[first_dir / "sampling_decision_10_samples.png"]
+    assert [axes.get_title() for axes in figure.axes[:2]] == [
+        "Sampling Score Map",
+        "Learned Sampling Mask — 10 Valid Sampling Points",
+    ]
+    score_values = figure.axes[0].images[0].get_array()
+    assert np.ma.getmaskarray(score_values).sum() == 2
+    legend_labels = figure.axes[1].get_legend_handles_labels()[1]
+    assert legend_labels == ["Transmitter", "Valid Sampling Points"]
+    assert figure.axes[1].collections[1].get_offsets().shape[0] == 10
+    for sample_count in (10, 50, 100, 200):
+        decision_figure = captured_figures[
+            first_dir / f"sampling_decision_{sample_count}_samples.png"
+        ]
+        assert decision_figure.axes[1].collections[1].get_offsets().shape[0] == (
+            sample_count
+        )
+
+
 def test_sampler_evaluation_is_reproducible_and_restores_runtime_settings(
     monkeypatch, tmp_path
 ):
@@ -94,6 +217,7 @@ def test_sampler_evaluation_is_reproducible_and_restores_runtime_settings(
             test_dataset=DeterministicSamplerEvaluationDataset(),
             evaluation_dir=evaluation_dir,
             batch_size=4,
+            evaluation_seed=137,
             sampler_training_config={
                 "temperature": 0.1,
                 "bisection_tolerance": 1e-6,
@@ -124,9 +248,10 @@ def test_sampler_evaluation_is_reproducible_and_restores_runtime_settings(
     ] == [0.5] * len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
     assert second_csv == first_csv
     assert second_rows == first_rows
-    assert len(first_masks) == len(second_masks) == len(first_rows)
+    expected_sample_counts = list(RadioDataset.EVALUATION_SAMPLE_COUNTS) * 4
+    assert len(first_masks) == len(second_masks) == len(expected_sample_counts)
     for sample_count, first_mask, second_mask in zip(
-        RadioDataset.EVALUATION_SAMPLE_COUNTS,
+        expected_sample_counts,
         first_masks,
         second_masks,
         strict=True,
@@ -222,7 +347,7 @@ def test_eval_sampler_loads_only_independent_best_checkpoints(
     ] == [0.5] * len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
     reconstructor = ControlledCheckpointReconstructor.instances[-1]
     assert reconstructor.weight.item() == 2.0
-    assert [int(mask.sum()) for mask in reconstructor.learned_sampling_masks] == list(
-        RadioDataset.EVALUATION_SAMPLE_COUNTS
+    assert [int(mask.sum()) for mask in reconstructor.learned_sampling_masks] == (
+        list(RadioDataset.EVALUATION_SAMPLE_COUNTS) * 4
     )
     assert legacy_best.read_text(encoding="utf-8") == "legacy"

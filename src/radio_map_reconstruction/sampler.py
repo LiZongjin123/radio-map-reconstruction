@@ -10,12 +10,17 @@ from radio_map_reconstruction.model import ResUnet
 class Sampler(Module):
     """K-independent Ranked Sampling Policy producing Sampling Score Maps."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        in_channels: int = 2,
+        out_channels: int = 1,
+        base_channels: int = 16,
+    ) -> None:
         super().__init__()
         self.score_model = ResUnet(
-            in_channels=2,
-            out_channels=1,
-            base_channels=16,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            base_channels=base_channels,
         )
 
     def forward(self, building_map: Tensor, transmitter_map: Tensor) -> Tensor:

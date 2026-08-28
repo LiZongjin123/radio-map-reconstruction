@@ -22,3 +22,20 @@ def delete_reconstructor_run() -> None:
         )
     if run_dir.exists():
         rmtree(run_dir)
+
+
+def delete_sampler_run() -> None:
+    run_dir = sampler_run_dir().resolve()
+    run_root = run_root_dir().resolve()
+    reconstructor_dir = reconstructor_run_dir().resolve()
+    if (
+        run_dir == run_root
+        or not run_dir.is_relative_to(run_root)
+        or reconstructor_dir.is_relative_to(run_dir)
+        or run_dir.is_relative_to(reconstructor_dir)
+    ):
+        raise ValueError(
+            "Sampler run directory must be an isolated child of the run root"
+        )
+    if run_dir.exists():
+        rmtree(run_dir)

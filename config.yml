@@ -31,11 +31,17 @@ sampler:
     out_channels: 1
     base_channels: 16
   training:
+    epochs: 20
     minimum_sample_count: 10
     maximum_sample_count: 200
     temperature: 0.1
     bisection_tolerance: 0.000001
     bisection_max_iterations: 64
+    optimizer:
+      init_lr: 0.0003
+    scheduler:
+      T_max: 20
+      eta_min: 0.000001
 
 evaluation:
   batch_size: 32

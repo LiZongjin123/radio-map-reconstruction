@@ -109,6 +109,9 @@ def test_complete_sampler_training_seam(monkeypatch, tmp_path):
     assert torch.count_nonzero(training_inputs[:, 2]) == 0
 
     assert reconstructor.state_dict() == reconstructor_before
+    assert sampler.scale.grad is not None
+    assert torch.isfinite(sampler.scale.grad)
+    assert torch.count_nonzero(sampler.scale.grad) > 0
     assert sampler.state_dict()["scale"] != sampler_before["scale"]
 
     with (tmp_path / "history.csv").open(newline="", encoding="utf-8") as file:

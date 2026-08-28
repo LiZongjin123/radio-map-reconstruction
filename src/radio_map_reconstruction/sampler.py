@@ -116,13 +116,30 @@ def _soft_top_k(
             flat_valid_receiving_area[sample_index], as_tuple=False
         ).squeeze(1)
         valid_scores = flat_scores[sample_index, valid_positions].to(work_dtype)
-        centered_scores = valid_scores - valid_scores.detach().max()
+
+        padding = temperature * max(
+            20.0,
+            log(valid_scores.numel() / tolerance) + 2.0,
+        )
+        ranked_indices = torch.argsort(
+            valid_scores.detach(), descending=True, stable=True
+        )
+        reference = valid_scores.detach()[ranked_indices[sample_count - 1]]
+        scale = valid_scores.detach().abs().max().clamp_min(1)
+        normalized_differences = valid_scores / scale - reference / scale
+        normalized_padding = padding / scale
+        far_above = normalized_differences.detach() > normalized_padding
+        far_below = normalized_differences.detach() < -normalized_padding
+        near_reference = ~(far_above | far_below)
+
+        centered_scores = torch.zeros_like(valid_scores)
+        centered_scores[far_above] = padding
+        centered_scores[far_below] = -padding
+        centered_scores[near_reference] = (
+            normalized_differences[near_reference] * scale
+        )
 
         with torch.no_grad():
-            padding = temperature * max(
-                20.0,
-                log(valid_scores.numel() / tolerance) + 2.0,
-            )
             lower = centered_scores.min() - padding
             upper = centered_scores.max() + padding
             target = float(sample_count)

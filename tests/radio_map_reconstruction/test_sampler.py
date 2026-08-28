@@ -112,9 +112,11 @@ def test_straight_through_top_k_reports_sample_specific_invalid_inputs():
 
 
 def test_straight_through_top_k_stays_finite_for_extreme_finite_scores():
-    extreme = torch.finfo(torch.float32).max / 2
+    extreme = torch.finfo(torch.float64).max
     scores = torch.tensor(
-        [[[[extreme, -extreme], [extreme, -extreme]]]], requires_grad=True
+        [[[[extreme, -extreme], [extreme, -extreme]]]],
+        dtype=torch.float64,
+        requires_grad=True,
     )
 
     learned_sampling_mask = straight_through_top_k(

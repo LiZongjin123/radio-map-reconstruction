@@ -44,6 +44,34 @@ class _StraightThroughMask(torch.autograd.Function):
         return None, gradient
 
 
+class _TemperatureSigmoid(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        context,
+        scores: Tensor,
+        threshold: Tensor,
+        temperature: float,
+        gradient_limit: float,
+    ) -> Tensor:
+        output = torch.sigmoid((scores - threshold) / temperature)
+        context.save_for_backward(output)
+        context.temperature = temperature
+        context.gradient_limit = gradient_limit
+        return output
+
+    @staticmethod
+    def backward(context, gradient: Tensor) -> tuple[Tensor, None, None, None]:
+        (output,) = context.saved_tensors
+        score_gradient = gradient * output * (1 - output) / context.temperature
+        score_gradient = torch.nan_to_num(
+            score_gradient,
+            nan=0.0,
+            posinf=context.gradient_limit,
+            neginf=-context.gradient_limit,
+        ).clamp(-context.gradient_limit, context.gradient_limit)
+        return score_gradient, None, None, None
+
+
 def _validate_top_k_inputs(
     scores: Tensor,
     valid_receiving_area: Tensor,
@@ -135,13 +163,13 @@ def _soft_top_k(
         normalized_padding = padding / score_scale
         far_above = normalized_differences.detach() > normalized_padding
         far_below = normalized_differences.detach() < -normalized_padding
-        near_reference = ~(far_above | far_below)
+        near_selection_boundary = ~(far_above | far_below)
 
         centered_scores = torch.zeros_like(valid_scores)
         centered_scores[far_above] = padding
         centered_scores[far_below] = -padding
-        centered_scores[near_reference] = (
-            valid_scores[near_reference] - selection_boundary_score
+        centered_scores[near_selection_boundary] = (
+            valid_scores[near_selection_boundary] - selection_boundary_score
         )
 
         with torch.no_grad():
@@ -163,8 +191,12 @@ def _soft_top_k(
 
             threshold = ((lower + upper) / 2).detach()
 
-        soft_values = torch.sigmoid(
-            (centered_scores - threshold) / temperature
+        gradient_limit = torch.finfo(scores.dtype).max / 4
+        soft_values = _TemperatureSigmoid.apply(
+            centered_scores,
+            threshold,
+            temperature,
+            gradient_limit,
         ).to(scores.dtype)
         flat_soft_mask[sample_index, valid_positions] = soft_values
 

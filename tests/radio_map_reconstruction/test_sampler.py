@@ -135,6 +135,24 @@ def test_straight_through_top_k_stays_finite_for_extreme_finite_scores():
         assert torch.isfinite(scores.grad).all()
 
 
+def test_straight_through_top_k_stabilizes_tiny_positive_temperature_gradient():
+    scores = torch.zeros(1, 1, 2, 2, requires_grad=True)
+
+    learned_sampling_mask = straight_through_top_k(
+        scores,
+        torch.ones_like(scores, dtype=torch.bool),
+        torch.tensor([2]),
+        temperature=1e-100,
+        tolerance=1e-6,
+        max_iterations=64,
+    )
+    learned_sampling_mask.sum().backward()
+
+    assert scores.grad is not None
+    assert torch.isfinite(scores.grad).all()
+    assert torch.count_nonzero(scores.grad) > 0
+
+
 def test_sampler_uses_building_then_transmitter_input_and_sixteen_base_channels():
     sampler = Sampler()
     observed_inputs = []

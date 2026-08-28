@@ -1,6 +1,6 @@
 import csv
-from contextlib import contextmanager
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -46,6 +46,7 @@ def deterministic_evaluation_runtime() -> Iterator[None]:
         )
         backends.cudnn.deterministic = cudnn_deterministic_was_enabled
         backends.cudnn.benchmark = cudnn_benchmark_was_enabled
+
 
 def load_checkpoint(path: str | Path) -> Module:
     checkpoint = load(path, map_location=CONFIG["runtime"]["device"])

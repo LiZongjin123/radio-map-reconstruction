@@ -41,13 +41,28 @@ class FixedEvaluationDataset(Dataset):
         }
 
 
-class OutOfRangeModel(Module):
+class FlatCoarseModel(Module):
+    def forward(self, inputs: Tensor) -> Tensor:
+        assert are_deterministic_algorithms_enabled()
+        return tensor(0.5).expand(inputs.shape[0], 1, *inputs.shape[-2:])
+
+
+class RecordingReconstructor(Module):
     def __init__(self):
         super().__init__()
         self.dummy_parameter = Parameter(tensor(0.0))
+        self.calls: list[tuple[list[int], list[float]]] = []
 
     def forward(self, inputs: Tensor) -> Tensor:
         assert are_deterministic_algorithms_enabled()
+        mask_sums = inputs[:, 3].flatten(1).sum(1)
+        sparse_sums = inputs[:, 0].flatten(1).sum(1)
+        self.calls.append(
+            (
+                mask_sums.tolist(),
+                (sparse_sums / mask_sums).tolist(),
+            )
+        )
         return (
             tensor(1.5).expand(inputs.shape[0], 1, 1, 202)
             + self.dummy_parameter * 0
@@ -62,7 +77,14 @@ def load_bundles(evaluation_dir):
     return bundles
 
 
-def test_evaluation_writes_reproducible_metrics_and_bundles_without_png(
+def read_png_bytes(evaluation_dir):
+    return {
+        path.name: path.read_bytes()
+        for path in sorted(evaluation_dir.glob("*.png"))
+    }
+
+
+def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
     monkeypatch, tmp_path
 ):
     deterministic_algorithms_were_enabled = (
@@ -73,42 +95,69 @@ def test_evaluation_writes_reproducible_metrics_and_bundles_without_png(
     evaluation_dir.mkdir()
     sentinel = evaluation_dir / "keep.txt"
     sentinel.write_text("keep", encoding="utf-8")
-    existing_png = evaluation_dir / "keep.png"
-    existing_png.write_bytes(b"existing")
+    sampler_config = {
+        "alpha": 0.5,
+        "weight_epsilon": 1e-6,
+        "max_iter": 30,
+        "tolerance": 1e-4,
+    }
 
     def run_once():
+        model = RecordingReconstructor()
         run_evaluation(
-            model=OutOfRangeModel(),
+            model=model,
+            coarse_model=FlatCoarseModel(),
             test_dataset=FixedEvaluationDataset(),
             criterion=RadioMapLoss(),
+            sampler_config=sampler_config,
+            global_seed=42,
             evaluation_dir=evaluation_dir,
-            batch_size=7,
         )
         with (evaluation_dir / "test_metrics.csv").open(
             newline="", encoding="utf-8"
         ) as file:
             rows = list(csv.DictReader(file))
-        return rows, load_bundles(evaluation_dir)
+        return model, rows, read_png_bytes(evaluation_dir), load_bundles(
+            evaluation_dir
+        )
 
-    first_rows, first_bundles = run_once()
-    second_rows, second_bundles = run_once()
+    first_model, first_rows, first_pngs, first_bundles = run_once()
+    second_model, second_rows, second_pngs, second_bundles = run_once()
 
     assert list(first_rows[0]) == [
         "sample_count",
-        "mean_per_sample_normalized_rmse",
+        "random_mean_per_sample_normalized_rmse",
+        "guided_mean_per_sample_normalized_rmse",
     ]
+    assert len(first_rows) == 10
     assert [int(row["sample_count"]) for row in first_rows] == list(
         RadioDataset.EVALUATION_SAMPLE_COUNTS
     )
     assert [
-        float(row["mean_per_sample_normalized_rmse"]) for row in first_rows
+        float(row["random_mean_per_sample_normalized_rmse"])
+        for row in first_rows
+    ] == approx([0.75] * 10)
+    assert [
+        float(row["guided_mean_per_sample_normalized_rmse"])
+        for row in first_rows
     ] == approx([0.75] * 10)
     assert second_rows == first_rows
 
-    assert list(first_bundles) == [
+    for call_index, (mask_sums, sparse_values) in enumerate(
+        first_model.calls
+    ):
+        sample_index = call_index // 2
+        ground_truth_value = (sample_index + 1) / 10
+        assert mask_sums == approx(
+            list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+        )
+        assert sparse_values == approx([ground_truth_value] * 10)
+    assert len(first_model.calls) == 8
+    assert first_model.calls == second_model.calls
+
+    assert sorted(first_bundles) == [
         f"evaluation_bundle_{index}.npz" for index in range(4)
     ]
-    assert list(second_bundles) == list(first_bundles)
     expected_fields = {
         "sample_count",
         "ground_truth",
@@ -137,19 +186,29 @@ def test_evaluation_writes_reproducible_metrics_and_bundles_without_png(
         for field in expected_fields:
             assert np.array_equal(bundle[field], repeated[field], equal_nan=True)
 
+    assert set(first_pngs) == {
+        "rmse_vs_sample_count.png",
+        "evaluation_bundle_10_samples.png",
+        "evaluation_bundle_50_samples.png",
+        "evaluation_bundle_100_samples.png",
+        "evaluation_bundle_200_samples.png",
+    }
+    assert list(second_pngs) == list(first_pngs)
+    for name, contents in first_pngs.items():
+        assert contents == second_pngs[name]
+
     assert sentinel.read_text(encoding="utf-8") == "keep"
-    assert list(evaluation_dir.glob("*.png")) == [existing_png]
     assert (
         are_deterministic_algorithms_enabled()
         == deterministic_algorithms_were_enabled
     )
 
 
-def test_eval_loads_only_the_role_specific_main_reconstructor_checkpoint(
+def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
     monkeypatch, tmp_path
 ):
     loaded_paths = []
-    model = OutOfRangeModel()
+    model = RecordingReconstructor()
 
     class TinyDataset:
         EVALUATION_SAMPLE_COUNTS = RadioDataset.EVALUATION_SAMPLE_COUNTS
@@ -157,31 +216,47 @@ def test_eval_loads_only_the_role_specific_main_reconstructor_checkpoint(
         def __init__(self, split):
             self.split = split
 
+    run_kwargs = {}
+
+    def fake_run_evaluation(**kwargs):
+        run_kwargs.update(kwargs)
+        return (
+            0.1,
+            0.2,
+            {count: (0.3, 0.4) for count in RadioDataset.EVALUATION_SAMPLE_COUNTS},
+        )
+
+    config = {
+        "device": "cpu",
+        "seed": 17,
+        "sampler": {"alpha": 0.5},
+    }
     monkeypatch.setattr(eval_module, "ROOT", tmp_path)
-    monkeypatch.setattr(
-        eval_module,
-        "CONFIG",
-        {
-            "device": "cpu",
-            "reconstructor": {"data_loader": {"batch_size": 7}},
-        },
-    )
+    monkeypatch.setattr(eval_module, "CONFIG", config)
     monkeypatch.setattr(eval_module, "RadioDataset", TinyDataset)
     monkeypatch.setattr(
         eval_module,
         "load_checkpoint",
-        lambda path: loaded_paths.append(Path(path)) or model,
+        lambda path: loaded_paths.append(("reconstructor", Path(path))) or model,
     )
     monkeypatch.setattr(
         eval_module,
-        "run_evaluation",
-        lambda **kwargs: (
-            0.1,
-            0.2,
-            {count: 0.3 for count in RadioDataset.EVALUATION_SAMPLE_COUNTS},
-        ),
+        "load_coarse_checkpoint",
+        lambda path: loaded_paths.append(("coarse_reconstructor", Path(path)))
+        or model,
     )
+    monkeypatch.setattr(eval_module, "run_evaluation", fake_run_evaluation)
 
     eval_module.eval()
 
-    assert loaded_paths == [tmp_path / "run" / "reconstructor" / "best.pt"]
+    assert loaded_paths == [
+        ("reconstructor", tmp_path / "run" / "reconstructor" / "best.pt"),
+        (
+            "coarse_reconstructor",
+            tmp_path / "run" / "coarse_reconstructor" / "best.pt",
+        ),
+    ]
+    assert isinstance(run_kwargs["test_dataset"], TinyDataset)
+    assert run_kwargs["sampler_config"] == {"alpha": 0.5}
+    assert run_kwargs["global_seed"] == 17
+    assert run_kwargs["evaluation_dir"] == tmp_path / "run" / "evaluation"

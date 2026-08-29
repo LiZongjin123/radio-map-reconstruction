@@ -11,7 +11,10 @@ from matplotlib.figure import Figure
 from PIL import Image
 from pytest import approx, fixture, mark, raises
 
-from radio_map_reconstruction.plot import run_plotting
+from radio_map_reconstruction.plot import (
+    run_plotting,
+    save_rmse_comparison_curve,
+)
 
 
 EXPECTED_PLOT_NAMES = {
@@ -227,6 +230,76 @@ def test_plotting_rejects_malformed_evaluation_bundles_before_writing_outputs(
         run_plotting(run_dir=run_dir, plots_dir=plots_dir)
 
     assert not plots_dir.exists()
+
+
+def test_plotting_reads_comparison_metrics_csv_with_both_strategies(
+    temporary_run_dir,
+):
+    run_dir = temporary_run_dir
+    plots_dir = run_dir / "plots"
+    write_metric_csvs(run_dir)
+    write_csv(
+        run_dir / "evaluation" / "test_metrics.csv",
+        (
+            "sample_count",
+            "random_mean_per_sample_normalized_rmse",
+            "guided_mean_per_sample_normalized_rmse",
+        ),
+        (
+            {
+                "sample_count": 10,
+                "random_mean_per_sample_normalized_rmse": 0.30,
+                "guided_mean_per_sample_normalized_rmse": 0.25,
+            },
+            {
+                "sample_count": 50,
+                "random_mean_per_sample_normalized_rmse": 0.20,
+                "guided_mean_per_sample_normalized_rmse": 0.15,
+            },
+            {
+                "sample_count": 100,
+                "random_mean_per_sample_normalized_rmse": 0.15,
+                "guided_mean_per_sample_normalized_rmse": 0.10,
+            },
+        ),
+    )
+    write_evaluation_bundles(run_dir)
+
+    run_plotting(run_dir=run_dir, plots_dir=plots_dir)
+
+    assert {path.name for path in plots_dir.iterdir()} == EXPECTED_PLOT_NAMES
+
+
+def test_rmse_comparison_curve_labels_both_strategies(tmp_path, monkeypatch):
+    captured_figure = None
+    original_savefig = Figure.savefig
+
+    def capture_curve_figure(figure, output_path, *args, **kwargs):
+        nonlocal captured_figure
+        if Path(output_path).name == "rmse_vs_sample_count.png":
+            captured_figure = figure
+            figure.canvas.draw()
+        return original_savefig(figure, output_path, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", capture_curve_figure)
+
+    save_rmse_comparison_curve(
+        sample_counts=[10, 50, 100],
+        random_rmse=[0.30, 0.20, 0.15],
+        guided_rmse=[0.25, 0.15, 0.10],
+        output_path=tmp_path / "rmse_vs_sample_count.png",
+    )
+
+    assert captured_figure is not None
+    axes = captured_figure.axes[0]
+    assert [text.get_text() for text in axes.get_legend().get_texts()] == [
+        "Random Sampling",
+        "Guided Sampling",
+    ]
+    assert axes.get_title() == "Reconstruction Error vs. Valid Sampling Points"
+    assert axes.get_xlabel() == "Number of Valid Sampling Points"
+    assert axes.get_ylabel() == "Mean Per-Sample Normalized RMSE"
+    assert len(axes.get_lines()) == 2
 
 
 def test_evaluation_bundle_figure_has_report_ready_rendering(

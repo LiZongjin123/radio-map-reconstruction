@@ -29,6 +29,7 @@ from radio_map_reconstruction.model import ResUnet
 from radio_map_reconstruction.sampling import (
     gradient_distance_weighted_clustering_sample,
 )
+from radio_map_reconstruction.util import sample_identity
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,14 +53,6 @@ def _validated_candidates(sampler_config: dict) -> tuple[float, ...]:
     if len(set(numeric_candidates)) != len(numeric_candidates):
         raise ValueError("sampler.alpha_candidates must not contain duplicates")
     return tuple(sorted(numeric_candidates))
-
-
-def _sample_identity(validation_dataset: Dataset, index: int) -> str:
-    samples = getattr(validation_dataset, "samples", None)
-    if samples is None:
-        return f"validation-{index}"
-    gain_path = samples[index][0]
-    return Path(gain_path).stem
 
 
 def _save_rmse_vs_alpha(metrics: dict[float, float], output_path: Path) -> None:
@@ -119,7 +112,9 @@ def run_alpha_validation(
                 tx_map = coarse_inputs[0:1]
                 building_map = coarse_inputs[1:2]
                 coarse_map = coarse_model(coarse_inputs.unsqueeze(0))[0]
-                sample_id = _sample_identity(validation_dataset, sample_index)
+                sample_id = sample_identity(
+                    validation_dataset, sample_index, fallback_prefix="validation"
+                )
 
                 for alpha in candidates:
                     main_inputs: list[Tensor] = []

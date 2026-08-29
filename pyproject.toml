@@ -21,6 +21,7 @@ dependencies = [
 [project.scripts]
 train = "radio_map_reconstruction.train:train"
 train-coarse = "radio_map_reconstruction.train:train_coarse"
+tune-alpha = "radio_map_reconstruction.alpha_validation:tune_alpha"
 eval = "radio_map_reconstruction.eval:eval"
 plot-results = "radio_map_reconstruction.plot:plot_results"
 

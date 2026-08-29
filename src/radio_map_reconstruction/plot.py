@@ -278,23 +278,28 @@ def save_evaluation_bundle_figure(
     plt.close(figure)
 
 
-def _read_random_rmse_series(metrics_path: Path) -> dict[str, list[float]]:
-    try:
-        return _read_numeric_columns(
+def _read_random_rmse_series(
+    metrics_path: Path,
+) -> tuple[str, dict[str, list[float]]]:
+    if not metrics_path.is_file():
+        raise FileNotFoundError(f"Required CSV file not found: {metrics_path}")
+    with metrics_path.open(newline="", encoding="utf-8") as csv_file:
+        fieldnames = set(csv.DictReader(csv_file).fieldnames or ())
+    if "random_mean_per_sample_normalized_rmse" in fieldnames:
+        return "random_mean_per_sample_normalized_rmse", _read_numeric_columns(
             metrics_path,
             (
                 "sample_count",
                 "random_mean_per_sample_normalized_rmse",
             ),
         )
-    except ValueError:
-        return _read_numeric_columns(
-            metrics_path,
-            (
-                "sample_count",
-                "mean_per_sample_normalized_rmse",
-            ),
-        )
+    return "mean_per_sample_normalized_rmse", _read_numeric_columns(
+        metrics_path,
+        (
+            "sample_count",
+            "mean_per_sample_normalized_rmse",
+        ),
+    )
 
 
 def run_plotting(*, run_dir: str | Path, plots_dir: str | Path) -> None:
@@ -304,13 +309,10 @@ def run_plotting(*, run_dir: str | Path, plots_dir: str | Path) -> None:
         run_dir / "history.csv",
         ("epoch", "train_loss", "val_loss"),
     )
-    test_metrics = _read_random_rmse_series(
+    rmse_column, test_metrics = _read_random_rmse_series(
         run_dir / "evaluation" / "test_metrics.csv"
     )
-    if "random_mean_per_sample_normalized_rmse" in test_metrics:
-        random_rmse = test_metrics["random_mean_per_sample_normalized_rmse"]
-    else:
-        random_rmse = test_metrics["mean_per_sample_normalized_rmse"]
+    random_rmse = test_metrics[rmse_column]
     bundles = _load_evaluation_bundles(run_dir / "evaluation")
     error_upper_limit = evaluation_error_upper_limit(bundles)
     plots_dir.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,6 @@
 import csv
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from torch import (
@@ -25,7 +26,7 @@ from radio_map_reconstruction.artifacts import (
     RECONSTRUCTOR_RUN_PATH,
 )
 from radio_map_reconstruction.data import RadioDataset
-from radio_map_reconstruction.loss import RadioMapLoss, normalized_mse_per_sample
+from radio_map_reconstruction.loss import normalized_mse_per_sample
 from radio_map_reconstruction.model import ResUnet
 from radio_map_reconstruction.plot import (
     EvaluationBundle,
@@ -40,6 +41,10 @@ from radio_map_reconstruction.train import CONFIG
 from radio_map_reconstruction.util import sample_identity
 
 ROOT = Path(__file__).resolve().parents[2]
+
+class StrategyRmse(NamedTuple):
+    random_rmse: float
+    guided_rmse: float
 
 def load_checkpoint(path: str | Path) -> Module:
     checkpoint = load(path, map_location=CONFIG["device"])
@@ -97,6 +102,20 @@ def _guided_sampling_inputs(
     return stack(guided_inputs)
 
 
+def _accumulate_rmse(
+    outputs: Tensor,
+    targets: dict[str, Tensor],
+    rmse_sums: dict[int, float],
+) -> None:
+    rmse_per_sample = normalized_mse_per_sample(
+        outputs.clamp(0, 1), targets
+    ).sqrt()
+    for count_index, sample_count in enumerate(
+        RadioDataset.EVALUATION_SAMPLE_COUNTS
+    ):
+        rmse_sums[sample_count] += rmse_per_sample[count_index].item()
+
+
 def _evaluation_bundle(
     *,
     inputs: Tensor,
@@ -124,10 +143,35 @@ def _evaluation_bundle(
     )
 
 
+def _random_evaluation_bundles(
+    *,
+    sample_index: int,
+    inputs: Tensor,
+    outputs: Tensor,
+    targets: dict[str, Tensor],
+    sample_counts: tuple[int, ...],
+) -> list[EvaluationBundle]:
+    bundles = []
+    for bundle_sample_index, bundle_count in EVALUATION_BUNDLE_CASES:
+        if sample_index != bundle_sample_index:
+            continue
+        count_index = sample_counts.index(bundle_count)
+        bundles.append(
+            _evaluation_bundle(
+                inputs=inputs[count_index],
+                output=outputs[count_index, 0].clamp(0, 1),
+                ground_truth=targets["gain"][count_index, 0],
+                valid_receiving_area=targets["mask"][count_index, 0],
+                sample_count=bundle_count,
+            )
+        )
+    return bundles
+
+
 def _write_evaluation_artifacts(
     evaluation_dir: Path,
     bundles: list[EvaluationBundle],
-    rmse_by_sample_count: dict[int, tuple[float, float]],
+    rmse_by_sample_count: dict[int, StrategyRmse],
 ) -> None:
     for bundle_index, bundle in enumerate(bundles):
         np.savez_compressed(
@@ -152,10 +196,12 @@ def _write_evaluation_artifacts(
     save_rmse_comparison_curve(
         sample_counts=list(rmse_by_sample_count),
         random_rmse=[
-            rmse[0] for rmse in rmse_by_sample_count.values()
+            comparison.random_rmse
+            for comparison in rmse_by_sample_count.values()
         ],
         guided_rmse=[
-            rmse[1] for rmse in rmse_by_sample_count.values()
+            comparison.guided_rmse
+            for comparison in rmse_by_sample_count.values()
         ],
         output_path=evaluation_dir / "rmse_vs_sample_count.png",
     )
@@ -163,7 +209,7 @@ def _write_evaluation_artifacts(
 
 def _write_test_metrics(
     evaluation_dir: Path,
-    rmse_by_sample_count: dict[int, tuple[float, float]],
+    rmse_by_sample_count: dict[int, StrategyRmse],
 ) -> None:
     metrics_path = evaluation_dir / "test_metrics.csv"
     fieldnames = (
@@ -174,13 +220,15 @@ def _write_test_metrics(
     with metrics_path.open("w", newline="", encoding="utf-8") as metrics_file:
         writer = csv.DictWriter(metrics_file, fieldnames=fieldnames)
         writer.writeheader()
-        for sample_count, (random_rmse, guided_rmse) in (
-            rmse_by_sample_count.items()
-        ):
+        for sample_count, comparison in rmse_by_sample_count.items():
             writer.writerow({
                 "sample_count": sample_count,
-                "random_mean_per_sample_normalized_rmse": random_rmse,
-                "guided_mean_per_sample_normalized_rmse": guided_rmse,
+                "random_mean_per_sample_normalized_rmse": (
+                    comparison.random_rmse
+                ),
+                "guided_mean_per_sample_normalized_rmse": (
+                    comparison.guided_rmse
+                ),
             })
 
 
@@ -189,11 +237,10 @@ def run_evaluation(
     model: Module,
     coarse_model: Module,
     test_dataset: Dataset,
-    criterion: Module,
     sampler_config: dict,
     global_seed: int,
     evaluation_dir: str | Path,
-) -> tuple[float, float, dict[int, tuple[float, float]]]:
+) -> dict[int, StrategyRmse]:
     """Compare fixed-seed random and configured-alpha guided sampling on one frozen reconstructor."""
     sample_counts = RadioDataset.EVALUATION_SAMPLE_COUNTS
     sample_total = len(test_dataset)
@@ -226,17 +273,8 @@ def run_evaluation(
     backends.cudnn.deterministic = True
     backends.cudnn.benchmark = False
 
-    rmse_sums: dict[str, dict[int, float]] = {
-        "random": {sample_count: 0.0 for sample_count in sample_counts},
-        "guided": {sample_count: 0.0 for sample_count in sample_counts},
-    }
-    case_counts: dict[str, dict[int, int]] = {
-        "random": {sample_count: 0 for sample_count in sample_counts},
-        "guided": {sample_count: 0 for sample_count in sample_counts},
-    }
-    total_loss = 0.0
-    total_rmse = 0.0
-    total_cases = 0
+    random_rmse_sums = {sample_count: 0.0 for sample_count in sample_counts}
+    guided_rmse_sums = {sample_count: 0.0 for sample_count in sample_counts}
     bundles: list[EvaluationBundle] = []
 
     try:
@@ -249,76 +287,55 @@ def run_evaluation(
             )
             for sample_index in progress:
                 cases = [
-                    test_dataset[sample_index * len(sample_counts) + count_index]
+                    test_dataset[
+                        sample_index * len(sample_counts) + count_index
+                    ]
                     for count_index in range(len(sample_counts))
                 ]
-                inputs = stack([case[0] for case in cases]).to(
-                    CONFIG["device"]
-                )
+                inputs = stack(
+                    [case[0] for case in cases]
+                ).to(CONFIG["device"])
                 targets = {
-                    name: stack([case[1][name] for case in cases]).to(
-                        CONFIG["device"]
-                    )
+                    name: stack(
+                        [case[1][name] for case in cases]
+                    ).to(CONFIG["device"])
                     for name in ("gain", "mask")
                 }
-                gain = targets["gain"]
 
-                for strategy, strategy_inputs in (
-                    ("random", inputs),
-                    (
-                        "guided",
-                        _guided_sampling_inputs(
-                            coarse_model=coarse_model,
-                            gain=gain,
-                            inputs=inputs,
-                            sample_counts=sample_counts,
-                            sampler_config=sampler_config,
-                            global_seed=global_seed,
-                            sample_id=sample_identity(
-                                test_dataset,
-                                sample_index,
-                                fallback_prefix="test",
-                            ),
-                        ),
-                    ),
-                ):
-                    outputs = model(strategy_inputs)
-                    total_loss += (
-                        criterion(outputs, targets).item() * len(sample_counts)
+                random_outputs = model(inputs)
+                _accumulate_rmse(random_outputs, targets, random_rmse_sums)
+                bundles.extend(
+                    _random_evaluation_bundles(
+                        sample_index=sample_index,
+                        inputs=inputs,
+                        outputs=random_outputs,
+                        targets=targets,
+                        sample_counts=sample_counts,
                     )
-                    rmse_per_sample = normalized_mse_per_sample(
-                        outputs.clamp(0, 1), targets
-                    ).sqrt()
-                    total_rmse += rmse_per_sample.sum().item()
-                    total_cases += len(sample_counts)
-                    for count_index, sample_count in enumerate(sample_counts):
-                        rmse_sums[strategy][sample_count] += (
-                            rmse_per_sample[count_index].item()
-                        )
-                        case_counts[strategy][sample_count] += 1
-
-                    if strategy == "random":
-                        for bundle_sample_index, bundle_count in (
-                            EVALUATION_BUNDLE_CASES
-                        ):
-                            if sample_index != bundle_sample_index:
-                                continue
-                            count_index = sample_counts.index(bundle_count)
-                            bundles.append(
-                                _evaluation_bundle(
-                                    inputs=inputs[count_index],
-                                    output=outputs[count_index, 0].clamp(0, 1),
-                                    ground_truth=gain[count_index, 0],
-                                    valid_receiving_area=targets["mask"][
-                                        count_index, 0
-                                    ],
-                                    sample_count=bundle_count,
-                                )
-                            )
-                progress.set_postfix(
-                    loss=f"{(total_loss / total_cases):.6f}",
-                    rmse=f"{(total_rmse / total_cases):.6f}",
                 )
+
+                guided_inputs = _guided_sampling_inputs(
+                    coarse_model=coarse_model,
+                    gain=targets["gain"],
+                    inputs=inputs,
+                    sample_counts=sample_counts,
+                    sampler_config=sampler_config,
+                    global_seed=global_seed,
+                    sample_id=sample_identity(
+                        test_dataset,
+                        sample_index,
+                        fallback_prefix="test",
+                    ),
+                )
+                guided_outputs = model(guided_inputs)
+                _accumulate_rmse(guided_outputs, targets, guided_rmse_sums)
+
+                evaluated_cases = (sample_index + 1) * 2 * len(sample_counts)
+                running_rmse = (
+                    sum(random_rmse_sums.values())
+                    + sum(guided_rmse_sums.values())
+                ) / evaluated_cases
+                progress.set_postfix(rmse=f"{running_rmse:.6f}")
     finally:
         model.train(model_was_training)
         coarse_model.train(coarse_model_was_training)
@@ -330,9 +347,9 @@ def run_evaluation(
         backends.cudnn.benchmark = cudnn_benchmark_was_enabled
 
     rmse_by_sample_count = {
-        sample_count: (
-            rmse_sums["random"][sample_count] / case_counts["random"][sample_count],
-            rmse_sums["guided"][sample_count] / case_counts["guided"][sample_count],
+        sample_count: StrategyRmse(
+            random_rmse=random_rmse_sums[sample_count] / sample_num,
+            guided_rmse=guided_rmse_sums[sample_count] / sample_num,
         )
         for sample_count in sample_counts
     }
@@ -340,10 +357,8 @@ def run_evaluation(
     evaluation_dir = Path(evaluation_dir)
     evaluation_dir.mkdir(parents=True, exist_ok=True)
     _write_test_metrics(evaluation_dir, rmse_by_sample_count)
-    _write_evaluation_artifacts(
-        evaluation_dir, bundles, rmse_by_sample_count
-    )
-    return total_loss / total_cases, total_rmse / total_cases, rmse_by_sample_count
+    _write_evaluation_artifacts(evaluation_dir, bundles, rmse_by_sample_count)
+    return rmse_by_sample_count
 
 
 def eval() -> None:
@@ -352,22 +367,18 @@ def eval() -> None:
     coarse_model = load_coarse_checkpoint(
         ROOT / COARSE_RECONSTRUCTOR_RUN_PATH / "best.pt"
     )
-    test_loss, test_rmse, rmse_by_sample_count = run_evaluation(
+    rmse_by_sample_count = run_evaluation(
         model=model,
         coarse_model=coarse_model,
         test_dataset=test_dataset,
-        criterion=RadioMapLoss(),
         sampler_config=CONFIG["sampler"],
         global_seed=CONFIG["seed"],
         evaluation_dir=ROOT / EVALUATION_RUN_PATH,
     )
 
-    print(f"test loss: {test_loss:.6f}")
-    print(f"test rmse: {test_rmse:.6f}")
-    for sample_count, (random_rmse, guided_rmse) in (
-        rmse_by_sample_count.items()
-    ):
+    for sample_count, comparison in rmse_by_sample_count.items():
         print(
             f"test rmse ({sample_count} samples): "
-            f"random={random_rmse:.6f} guided={guided_rmse:.6f}"
+            f"random={comparison.random_rmse:.6f} "
+            f"guided={comparison.guided_rmse:.6f}"
         )

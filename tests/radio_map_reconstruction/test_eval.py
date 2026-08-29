@@ -8,9 +8,12 @@ from torch.nn import Module, Parameter
 from torch.utils.data import Dataset
 
 from radio_map_reconstruction.data import RadioDataset
-from radio_map_reconstruction.eval import CONFIG, run_evaluation
+from radio_map_reconstruction.eval import (
+    CONFIG,
+    StrategyRmse,
+    run_evaluation,
+)
 import radio_map_reconstruction.eval as eval_module
-from radio_map_reconstruction.loss import RadioMapLoss
 
 
 class FixedEvaluationDataset(Dataset):
@@ -104,11 +107,10 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
 
     def run_once():
         model = RecordingReconstructor()
-        run_evaluation(
+        rmse_by_sample_count = run_evaluation(
             model=model,
             coarse_model=FlatCoarseModel(),
             test_dataset=FixedEvaluationDataset(),
-            criterion=RadioMapLoss(),
             sampler_config=sampler_config,
             global_seed=42,
             evaluation_dir=evaluation_dir,
@@ -117,12 +119,16 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
             newline="", encoding="utf-8"
         ) as file:
             rows = list(csv.DictReader(file))
-        return model, rows, read_png_bytes(evaluation_dir), load_bundles(
+        return model, rmse_by_sample_count, rows, read_png_bytes(
             evaluation_dir
-        )
+        ), load_bundles(evaluation_dir)
 
-    first_model, first_rows, first_pngs, first_bundles = run_once()
-    second_model, second_rows, second_pngs, second_bundles = run_once()
+    first_model, first_rmse, first_rows, first_pngs, first_bundles = (
+        run_once()
+    )
+    second_model, second_rmse, second_rows, second_pngs, second_bundles = (
+        run_once()
+    )
 
     assert list(first_rows[0]) == [
         "sample_count",
@@ -141,6 +147,11 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
         float(row["guided_mean_per_sample_normalized_rmse"])
         for row in first_rows
     ] == approx([0.75] * 10)
+    assert list(first_rmse) == list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+    for comparison in first_rmse.values():
+        assert comparison.random_rmse == approx(0.75)
+        assert comparison.guided_rmse == approx(0.75)
+    assert second_rmse == first_rmse
     assert second_rows == first_rows
 
     for call_index, (mask_sums, sparse_values) in enumerate(
@@ -220,11 +231,10 @@ def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
 
     def fake_run_evaluation(**kwargs):
         run_kwargs.update(kwargs)
-        return (
-            0.1,
-            0.2,
-            {count: (0.3, 0.4) for count in RadioDataset.EVALUATION_SAMPLE_COUNTS},
-        )
+        return {
+            count: StrategyRmse(random_rmse=0.3, guided_rmse=0.4)
+            for count in RadioDataset.EVALUATION_SAMPLE_COUNTS
+        }
 
     config = {
         "device": "cpu",

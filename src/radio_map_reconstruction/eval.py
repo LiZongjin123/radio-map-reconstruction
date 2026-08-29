@@ -31,7 +31,7 @@ from radio_map_reconstruction.loss import normalized_mse_per_sample
 from radio_map_reconstruction.model import ResUnet
 from radio_map_reconstruction.plot import (
     EvaluationBundle,
-    SamplingDiagnosticFigure,
+    SamplingDiagnosticData,
     evaluation_error_upper_limit,
     save_evaluation_bundle_figure,
     save_rmse_comparison_curve,
@@ -75,7 +75,7 @@ def _guided_sampling_inputs(
     global_seed: int,
     sample_id: str,
     sample_index: int,
-) -> tuple[Tensor, list[SamplingDiagnosticFigure]]:
+) -> tuple[Tensor, list[SamplingDiagnosticData]]:
     tx_map = inputs[0, 1:2]
     building_map = inputs[0, 2:3]
     coarse_map = coarse_model(cat((tx_map, building_map)).unsqueeze(0))[0]
@@ -106,7 +106,7 @@ def _guided_sampling_inputs(
         )
         if (sample_index, sample_count) in SAMPLING_DIAGNOSTIC_CASES:
             diagnostic_figures.append(
-                SamplingDiagnosticFigure(
+                SamplingDiagnosticData(
                     sample_count=sample_count,
                     coarse_map=diagnostics.coarse_map[0].cpu().numpy(),
                     normalized_gradient=(
@@ -118,8 +118,8 @@ def _guided_sampling_inputs(
                     score=diagnostics.score[0].cpu().numpy(),
                     cluster_labels=diagnostics.cluster_labels[0].cpu().numpy(),
                     sampling_mask=sampling_mask[0].bool().cpu().numpy(),
-                    invalid_area=(
-                        diagnostics.cluster_labels[0] < 0
+                    valid_receiving_area=(
+                        diagnostics.cluster_labels[0] >= 0
                     ).cpu().numpy(),
                     transmitter_point=(
                         diagnostics.transmitter_point.cpu().numpy()
@@ -198,7 +198,7 @@ def _random_evaluation_bundles(
 def _write_evaluation_artifacts(
     evaluation_dir: Path,
     bundles: list[EvaluationBundle],
-    sampling_diagnostics: list[SamplingDiagnosticFigure],
+    sampling_diagnostics: list[SamplingDiagnosticData],
     rmse_by_sample_count: dict[int, StrategyRmse],
 ) -> None:
     for bundle_index, bundle in enumerate(bundles):
@@ -226,7 +226,8 @@ def _write_evaluation_artifacts(
             diagnostic,
             output_path=(
                 evaluation_dir
-                / "gradient_distance_guided_sampling_diagnostics_"
+                / "gradient_distance_weighted_clustering_sampling_strategy_"
+                "diagnostics_"
                 f"{diagnostic.sample_count}_samples.png"
             ),
         )
@@ -317,7 +318,7 @@ def run_evaluation(
     random_rmse_sums = {sample_count: 0.0 for sample_count in sample_counts}
     guided_rmse_sums = {sample_count: 0.0 for sample_count in sample_counts}
     bundles: list[EvaluationBundle] = []
-    sampling_diagnostics: list[SamplingDiagnosticFigure] = []
+    sampling_diagnostics: list[SamplingDiagnosticData] = []
 
     try:
         with inference_mode():

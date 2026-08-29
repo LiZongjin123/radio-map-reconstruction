@@ -12,7 +12,7 @@ from PIL import Image
 from pytest import approx, fixture, mark, raises
 
 from radio_map_reconstruction.plot import (
-    SamplingDiagnosticFigure,
+    SamplingDiagnosticData,
     run_plotting,
     save_sampling_diagnostic_figure,
     save_rmse_comparison_curve,
@@ -380,7 +380,7 @@ def test_sampling_diagnostic_figure_shows_decision_chain_and_actual_mask(
     sampling_mask[2, 3] = True
     cluster_labels = np.arange(12).reshape(3, 4)
     cluster_labels[invalid_area] = -1
-    diagnostic = SamplingDiagnosticFigure(
+    diagnostic = SamplingDiagnosticData(
         sample_count=2,
         coarse_map=np.linspace(0, 1, 12).reshape(3, 4),
         normalized_gradient=np.linspace(1, 0, 12).reshape(3, 4),
@@ -388,13 +388,14 @@ def test_sampling_diagnostic_figure_shows_decision_chain_and_actual_mask(
         score=np.linspace(0.1, 0.9, 12).reshape(3, 4),
         cluster_labels=cluster_labels,
         sampling_mask=sampling_mask,
-        invalid_area=invalid_area,
+        valid_receiving_area=~invalid_area,
         transmitter_point=np.asarray([0, 0]),
     )
 
     output_path = (
         tmp_path
-        / "gradient_distance_guided_sampling_diagnostics_2_samples.png"
+        / "gradient_distance_weighted_clustering_sampling_strategy_"
+        "diagnostics_2_samples.png"
     )
     save_sampling_diagnostic_figure(diagnostic, output_path=output_path)
 
@@ -407,7 +408,7 @@ def test_sampling_diagnostic_figure_shows_decision_chain_and_actual_mask(
         "Clustering and Sampling",
     ]
     assert captured_figure.get_suptitle() == (
-        "Gradient-Distance Weighted Clustering Sampling — "
+        "Gradient-Distance Weighted Clustering Sampling Strategy — "
         "2 Valid Sampling Points"
     )
     for axes in captured_figure.axes:

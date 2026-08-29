@@ -210,10 +210,14 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
         "evaluation_bundle_50_samples.png",
         "evaluation_bundle_100_samples.png",
         "evaluation_bundle_200_samples.png",
-        "gradient_distance_guided_sampling_diagnostics_10_samples.png",
-        "gradient_distance_guided_sampling_diagnostics_50_samples.png",
-        "gradient_distance_guided_sampling_diagnostics_100_samples.png",
-        "gradient_distance_guided_sampling_diagnostics_200_samples.png",
+        "gradient_distance_weighted_clustering_sampling_strategy_"
+        "diagnostics_10_samples.png",
+        "gradient_distance_weighted_clustering_sampling_strategy_"
+        "diagnostics_50_samples.png",
+        "gradient_distance_weighted_clustering_sampling_strategy_"
+        "diagnostics_100_samples.png",
+        "gradient_distance_weighted_clustering_sampling_strategy_"
+        "diagnostics_200_samples.png",
     }
     assert list(second_pngs) == list(first_pngs)
     for name, contents in first_pngs.items():

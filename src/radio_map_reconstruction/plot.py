@@ -35,7 +35,7 @@ class EvaluationBundle:
 
 
 @dataclass(frozen=True)
-class SamplingDiagnosticFigure:
+class SamplingDiagnosticData:
     sample_count: int
     coarse_map: np.ndarray
     normalized_gradient: np.ndarray
@@ -43,7 +43,7 @@ class SamplingDiagnosticFigure:
     score: np.ndarray
     cluster_labels: np.ndarray
     sampling_mask: np.ndarray
-    invalid_area: np.ndarray
+    valid_receiving_area: np.ndarray
     transmitter_point: np.ndarray
 
 
@@ -292,7 +292,7 @@ def save_evaluation_bundle_figure(
 
 
 def save_sampling_diagnostic_figure(
-    diagnostic: SamplingDiagnosticFigure,
+    diagnostic: SamplingDiagnosticData,
     *,
     output_path: Path,
 ) -> None:
@@ -303,7 +303,7 @@ def save_sampling_diagnostic_figure(
         diagnostic.score,
         diagnostic.cluster_labels,
         diagnostic.sampling_mask,
-        diagnostic.invalid_area,
+        diagnostic.valid_receiving_area,
     )
     expected_shape = diagnostic.coarse_map.shape
     if len(expected_shape) != 2 or any(
@@ -313,14 +313,14 @@ def save_sampling_diagnostic_figure(
     if diagnostic.transmitter_point.shape != (2,):
         raise ValueError("transmitter_point must contain one row-column pair")
     sampling_mask = diagnostic.sampling_mask.astype(bool)
-    invalid_area = diagnostic.invalid_area.astype(bool)
+    valid_receiving_area = diagnostic.valid_receiving_area.astype(bool)
     selected_points = np.argwhere(sampling_mask)
     if selected_points.shape[0] != diagnostic.sample_count:
         raise ValueError(
             "Sampling diagnostic must contain exactly "
             f"{diagnostic.sample_count} Valid Sampling Points"
         )
-    if np.any(sampling_mask & invalid_area):
+    if np.any(sampling_mask & ~valid_receiving_area):
         raise ValueError("Valid Sampling Points cannot occupy the invalid area")
 
     figure, axes = plt.subplots(
@@ -352,7 +352,7 @@ def save_sampling_diagnostic_figure(
     )
     for axes_item, (title, values, colormap) in zip(axes, panels, strict=True):
         axes_item.imshow(
-            np.ma.masked_where(invalid_area, values),
+            np.ma.masked_where(~valid_receiving_area, values),
             cmap=colormap,
             vmin=0,
             vmax=(
@@ -387,7 +387,7 @@ def save_sampling_diagnostic_figure(
     )
     cluster_axes.legend(loc="lower right", fontsize="small", framealpha=0.9)
     figure.suptitle(
-        "Gradient-Distance Weighted Clustering Sampling — "
+        "Gradient-Distance Weighted Clustering Sampling Strategy — "
         f"{diagnostic.sample_count} Valid Sampling Points"
     )
     figure.savefig(output_path, dpi=300)

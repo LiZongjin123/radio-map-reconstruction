@@ -14,7 +14,10 @@ from torch import (
 from torch.nn import Module
 from torch.utils.data import DataLoader, Dataset
 
-from radio_map_reconstruction.artifacts import EVALUATION_BUNDLE_CASES
+from radio_map_reconstruction.artifacts import (
+    EVALUATION_BUNDLE_CASES,
+    RECONSTRUCTOR_RUN_PATH,
+)
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.loss import RadioMapLoss
 from radio_map_reconstruction.model import ResUnet
@@ -24,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def load_checkpoint(path: str | Path) -> Module:
     checkpoint = load(path, map_location=CONFIG["device"])
-    model = ResUnet().to(CONFIG["device"])
+    model = ResUnet(**CONFIG["reconstructor"]["model"]).to(CONFIG["device"])
     model.load_state_dict(checkpoint["model_state_dict"])
     return model
 
@@ -142,13 +145,13 @@ def _write_evaluation_bundles(
 
 def eval() -> None:
     test_dataset = RadioDataset("test")
-    model = load_checkpoint(ROOT / "run" / "best.pt")
+    model = load_checkpoint(ROOT / RECONSTRUCTOR_RUN_PATH / "best.pt")
     test_loss, test_rmse, rmse_by_sample_count = run_evaluation(
         model=model,
         test_dataset=test_dataset,
         criterion=RadioMapLoss(),
         evaluation_dir=ROOT / "run" / "evaluation",
-        batch_size=CONFIG["data_loader"]["batch_size"],
+        batch_size=CONFIG["reconstructor"]["data_loader"]["batch_size"],
     )
 
     print(f"test loss: {test_loss:.6f}")

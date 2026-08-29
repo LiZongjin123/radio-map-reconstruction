@@ -1,4 +1,5 @@
 import csv
+from pathlib import Path
 
 import numpy as np
 from pytest import approx
@@ -8,6 +9,7 @@ from torch.utils.data import Dataset
 
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.eval import CONFIG, run_evaluation
+import radio_map_reconstruction.eval as eval_module
 from radio_map_reconstruction.loss import RadioMapLoss
 
 
@@ -141,3 +143,45 @@ def test_evaluation_writes_reproducible_metrics_and_bundles_without_png(
         are_deterministic_algorithms_enabled()
         == deterministic_algorithms_were_enabled
     )
+
+
+def test_eval_loads_only_the_role_specific_main_reconstructor_checkpoint(
+    monkeypatch, tmp_path
+):
+    loaded_paths = []
+    model = OutOfRangeModel()
+
+    class TinyDataset:
+        EVALUATION_SAMPLE_COUNTS = RadioDataset.EVALUATION_SAMPLE_COUNTS
+
+        def __init__(self, split):
+            self.split = split
+
+    monkeypatch.setattr(eval_module, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        eval_module,
+        "CONFIG",
+        {
+            "device": "cpu",
+            "reconstructor": {"data_loader": {"batch_size": 7}},
+        },
+    )
+    monkeypatch.setattr(eval_module, "RadioDataset", TinyDataset)
+    monkeypatch.setattr(
+        eval_module,
+        "load_checkpoint",
+        lambda path: loaded_paths.append(Path(path)) or model,
+    )
+    monkeypatch.setattr(
+        eval_module,
+        "run_evaluation",
+        lambda **kwargs: (
+            0.1,
+            0.2,
+            {count: 0.3 for count in RadioDataset.EVALUATION_SAMPLE_COUNTS},
+        ),
+    )
+
+    eval_module.eval()
+
+    assert loaded_paths == [tmp_path / "run" / "reconstructor" / "best.pt"]

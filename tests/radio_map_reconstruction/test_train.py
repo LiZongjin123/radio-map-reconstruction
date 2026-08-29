@@ -1,4 +1,5 @@
 import csv
+from types import SimpleNamespace
 
 from pytest import approx
 from torch import Tensor, load, tensor
@@ -14,8 +15,20 @@ from radio_map_reconstruction.train import (
     run_training,
     train_one_epoch,
 )
+import radio_map_reconstruction.train as train_module
 
 EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
+
+
+def test_main_reconstructor_configuration_is_nested():
+    assert {"epoch", "data_loader", "optimizer", "scheduler"}.isdisjoint(CONFIG)
+    assert set(CONFIG["reconstructor"]) == {
+        "model",
+        "training",
+        "data_loader",
+        "optimizer",
+        "scheduler",
+    }
 
 
 class PassThroughModel(Module):
@@ -177,3 +190,82 @@ def test_training_writes_history_and_selects_best_average_rmse_without_clearing_
         0.0875, abs=1e-7
     )
     assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_main_training_uses_nested_reconstructor_config_and_role_directory(
+    monkeypatch, tmp_path
+):
+    config = {
+        "device": "cpu",
+        "reconstructor": {
+            "model": {
+                "in_channels": 4,
+                "out_channels": 1,
+                "base_channels": 8,
+            },
+            "training": {"epochs": 3},
+            "data_loader": {"num_workers": 0, "batch_size": 2},
+            "optimizer": {"learning_rate": 0.01},
+            "scheduler": {"t_max": 3, "eta_min": 0.001},
+        },
+        "swanlab": {"project": "project", "workspace": "workspace"},
+    }
+    captured = {"loaders": []}
+
+    class TinyModel(Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = Parameter(tensor(0.0))
+
+    def make_model(**kwargs):
+        captured["model_config"] = kwargs
+        return TinyModel()
+
+    def make_loader(**kwargs):
+        captured["loaders"].append(kwargs)
+        return kwargs["dataset"]
+
+    monkeypatch.setattr(train_module, "CONFIG", config)
+    monkeypatch.setattr(train_module, "ROOT", tmp_path)
+    monkeypatch.setattr(train_module, "RadioDataset", lambda split: split)
+    monkeypatch.setattr(train_module, "DataLoader", make_loader)
+    monkeypatch.setattr(train_module, "ResUnet", make_model)
+    monkeypatch.setattr(
+        train_module,
+        "swanlab",
+        SimpleNamespace(
+            init=lambda **kwargs: None,
+            log=lambda metrics: None,
+            finish=lambda: None,
+        ),
+    )
+    monkeypatch.setattr(
+        train_module,
+        "run_training",
+        lambda **kwargs: captured.update(run_training=kwargs),
+    )
+
+    train_module.train()
+
+    assert captured["model_config"] == config["reconstructor"]["model"]
+    assert captured["loaders"] == [
+        {
+            "dataset": "train",
+            "num_workers": 0,
+            "batch_size": 2,
+            "shuffle": True,
+            "pin_memory": True,
+        },
+        {
+            "dataset": "val",
+            "num_workers": 0,
+            "batch_size": 2,
+            "shuffle": True,
+            "pin_memory": True,
+        },
+    ]
+    assert captured["run_training"]["epoch_num"] == 3
+    assert captured["run_training"]["run_dir"] == tmp_path / "run" / "reconstructor"
+    assert captured["run_training"]["optimizer"].defaults["lr"] == approx(0.01)
+    assert captured["run_training"]["scheduler"].T_max == 3
+    assert captured["run_training"]["scheduler"].eta_min == approx(0.001)

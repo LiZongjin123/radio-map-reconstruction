@@ -10,6 +10,7 @@ from torch.optim import Adam, Optimizer
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 from yaml import safe_load
+from radio_map_reconstruction.artifacts import RECONSTRUCTOR_RUN_PATH
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.loss import RadioMapLoss, normalized_mse_per_sample
 from radio_map_reconstruction.model import ResUnet
@@ -177,20 +178,21 @@ def run_training(
             scheduler.step()
 
 def train() -> None:
+    reconstructor_config = CONFIG["reconstructor"]
     train_data = RadioDataset("train")
     val_data = RadioDataset("val")
 
     train_loader = DataLoader(
         dataset=train_data,
-        num_workers=CONFIG["data_loader"]["num_workers"],
-        batch_size=CONFIG["data_loader"]["batch_size"],
+        num_workers=reconstructor_config["data_loader"]["num_workers"],
+        batch_size=reconstructor_config["data_loader"]["batch_size"],
         shuffle=True,
         pin_memory=True
     )
     val_loader = DataLoader(
         dataset=val_data,
-        num_workers=CONFIG["data_loader"]["num_workers"],
-        batch_size=CONFIG["data_loader"]["batch_size"],
+        num_workers=reconstructor_config["data_loader"]["num_workers"],
+        batch_size=reconstructor_config["data_loader"]["batch_size"],
         shuffle=True,
         pin_memory=True
     )
@@ -199,20 +201,23 @@ def train() -> None:
         project=CONFIG["swanlab"]["project"],
         workspace=CONFIG["swanlab"]["workspace"],
         config={
-            "learning_rate": CONFIG["optimizer"]["init_lr"],
-            "epoch": CONFIG["epoch"],
-            "T_max": CONFIG["scheduler"]["T_max"],
-            "eta_min": CONFIG["scheduler"]["eta_min"]
+            "learning_rate": reconstructor_config["optimizer"]["learning_rate"],
+            "epochs": reconstructor_config["training"]["epochs"],
+            "t_max": reconstructor_config["scheduler"]["t_max"],
+            "eta_min": reconstructor_config["scheduler"]["eta_min"],
         }
     )
 
-    res_unet = ResUnet().to(CONFIG["device"])
+    res_unet = ResUnet(**reconstructor_config["model"]).to(CONFIG["device"])
     criterion = RadioMapLoss()
-    optimizer = Adam(res_unet.parameters(), lr=CONFIG["optimizer"]["init_lr"])
+    optimizer = Adam(
+        res_unet.parameters(),
+        lr=reconstructor_config["optimizer"]["learning_rate"],
+    )
     scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=CONFIG["scheduler"]["T_max"],
-        eta_min=CONFIG["scheduler"]["eta_min"]
+        T_max=reconstructor_config["scheduler"]["t_max"],
+        eta_min=reconstructor_config["scheduler"]["eta_min"],
     )
 
     try:
@@ -223,8 +228,8 @@ def train() -> None:
             criterion=criterion,
             optimizer=optimizer,
             scheduler=scheduler,
-            epoch_num=CONFIG["epoch"],
-            run_dir=ROOT / "run",
+            epoch_num=reconstructor_config["training"]["epochs"],
+            run_dir=ROOT / RECONSTRUCTOR_RUN_PATH,
             metric_logger=swanlab.log,
         )
     finally:

@@ -30,13 +30,17 @@ def _restore_channel(value: Tensor, had_channel: bool) -> Tensor:
     return value.unsqueeze(0) if had_channel else value
 
 
-def _normalize_over_candidates(values: Tensor, valid_area: Tensor) -> Tensor:
-    candidate_values = values[valid_area]
+def _normalize_over_candidates(
+    values: Tensor, valid_receiving_area: Tensor
+) -> Tensor:
+    candidate_values = values[valid_receiving_area]
     minimum = candidate_values.min()
     value_range = candidate_values.max() - minimum
     normalized = zeros_like(values, dtype=float32)
     if value_range.item() > 0:
-        normalized[valid_area] = (candidate_values - minimum) / value_range
+        normalized[valid_receiving_area] = (
+            candidate_values - minimum
+        ) / value_range
     return normalized
 
 
@@ -102,8 +106,8 @@ def gradient_distance_weighted_clustering_sample(
             f"pixel; found {transmitter_points.shape[0]}"
         )
     transmitter_point = transmitter_points[0]
-    valid_area = (tx < 0.5) & (building < 0.5)
-    candidate_points = valid_area.nonzero()
+    valid_receiving_area = (tx < 0.5) & (building < 0.5)
+    candidate_points = valid_receiving_area.nonzero()
     if candidate_points.shape[0] < sample_count:
         raise ValueError(
             f"sample {sample_id!r}: requested {sample_count} Valid Sampling Points "
@@ -112,20 +116,26 @@ def gradient_distance_weighted_clustering_sample(
 
     clipped_coarse = coarse.detach().to(float32).clamp(0, 1)
     gradient = _sobel_magnitude(clipped_coarse)
-    normalized_gradient = _normalize_over_candidates(gradient, valid_area)
+    normalized_gradient = _normalize_over_candidates(
+        gradient, valid_receiving_area
+    )
     offsets = candidate_points.to(float32) - transmitter_point.to(float32)
     distances = offsets.square().sum(dim=1).sqrt()
     distance_map = zeros_like(clipped_coarse)
-    distance_map[valid_area] = distances
-    normalized_distance = _normalize_over_candidates(distance_map, valid_area)
+    distance_map[valid_receiving_area] = distances
+    normalized_distance = _normalize_over_candidates(
+        distance_map, valid_receiving_area
+    )
     score = zeros_like(clipped_coarse)
-    score[valid_area] = (
-        alpha * normalized_gradient[valid_area]
-        + (1 - alpha) * normalized_distance[valid_area]
+    score[valid_receiving_area] = (
+        alpha * normalized_gradient[valid_receiving_area]
+        + (1 - alpha) * normalized_distance[valid_receiving_area]
     )
 
     candidate_coordinates = candidate_points.detach().cpu().numpy()
-    candidate_weights = (score[valid_area] + weight_epsilon).detach().cpu().numpy()
+    candidate_weights = (
+        (score[valid_receiving_area] + weight_epsilon).detach().cpu().numpy()
+    )
     kmeans = KMeans(
         n_clusters=sample_count,
         init="k-means++",
@@ -177,7 +187,9 @@ def gradient_distance_weighted_clustering_sample(
     sampling_mask = zeros_like(clipped_coarse)
     sampling_mask[selected_points[:, 0], selected_points[:, 1]] = 1
     cluster_labels = zeros_like(coarse, dtype=long) - 1
-    cluster_labels[valid_area] = as_tensor(labels, device=coarse.device, dtype=long)
+    cluster_labels[valid_receiving_area] = as_tensor(
+        labels, device=coarse.device, dtype=long
+    )
 
     diagnostics = SamplingDiagnostics(
         coarse_map=_restore_channel(clipped_coarse, coarse_had_channel),

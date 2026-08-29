@@ -16,7 +16,7 @@ def synthetic_maps() -> tuple[Tensor, Tensor, Tensor]:
     return coarse_map, tx_map, building_map
 
 
-def test_guided_sampling_is_deterministic_and_returns_exact_valid_points():
+def test_gradient_distance_weighted_clustering_strategy_is_deterministic_and_returns_exact_valid_sampling_points():
     coarse_map, tx_map, building_map = synthetic_maps()
 
     first_mask, first_diagnostics = gradient_distance_weighted_clustering_sample(
@@ -94,17 +94,17 @@ def test_diagnostics_clip_prediction_and_normalize_only_valid_receiving_area():
         tolerance=1e-4,
     )
 
-    valid_area = (tx_map < 0.5) & (building_map < 0.5)
-    invalid_area = ~valid_area
+    valid_receiving_area = (tx_map < 0.5) & (building_map < 0.5)
+    outside_valid_receiving_area = ~valid_receiving_area
     assert diagnostics.coarse_map.min().item() == 0
     assert diagnostics.coarse_map.max().item() == 1
-    assert not diagnostics.normalized_gradient[invalid_area].any()
-    assert not diagnostics.normalized_distance[invalid_area].any()
-    assert not diagnostics.score[invalid_area].any()
-    assert diagnostics.normalized_gradient[valid_area].min().item() == 0
-    assert diagnostics.normalized_gradient[valid_area].max().item() == 1
-    assert diagnostics.normalized_distance[valid_area].min().item() == 0
-    assert diagnostics.normalized_distance[valid_area].max().item() == 1
+    assert not diagnostics.normalized_gradient[outside_valid_receiving_area].any()
+    assert not diagnostics.normalized_distance[outside_valid_receiving_area].any()
+    assert not diagnostics.score[outside_valid_receiving_area].any()
+    assert diagnostics.normalized_gradient[valid_receiving_area].min().item() == 0
+    assert diagnostics.normalized_gradient[valid_receiving_area].max().item() == 1
+    assert diagnostics.normalized_distance[valid_receiving_area].min().item() == 0
+    assert diagnostics.normalized_distance[valid_receiving_area].max().item() == 1
     expected_score = (
         0.25 * diagnostics.normalized_gradient
         + 0.75 * diagnostics.normalized_distance

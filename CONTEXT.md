@@ -20,6 +20,10 @@ _Avoid_: Point map
 A sampling mask that is reused for the same channel map and sample count across repeated evaluations. Masks for different sample counts are independently sampled and need not contain one another.
 _Avoid_: Nested sampling mask
 
+**Gradient-Distance Weighted Clustering Sampling Strategy**:
+A deterministic sampling strategy that selects exactly the requested number of valid sampling points by balancing predicted channel-map variation, transmitter distance, and spatial coverage.
+_Avoid_: Gradient-guided probabilistic sampler, Sampling model
+
 **Evaluation Bundle**:
 The ground truth, sampling mask, sparse channel map, reconstructed channel map, and absolute error retained together for later visualization.
 _Avoid_: Result image, visualization output

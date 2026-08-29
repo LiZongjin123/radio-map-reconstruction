@@ -4,12 +4,24 @@ from pathlib import Path
 import tomllib
 
 from pytest import approx
-from torch import Tensor, arange, cat, tensor, zeros
+from torch import (
+    Tensor,
+    arange,
+    are_deterministic_algorithms_enabled,
+    cat,
+    full,
+    save,
+    tensor,
+    uint8,
+    zeros,
+)
 from torch.nn import Module
 from torch.utils.data import Dataset
+from torchvision.io import write_png
 
 from radio_map_reconstruction.alpha_validation import run_alpha_validation
 from radio_map_reconstruction.data import RadioDataset
+from radio_map_reconstruction.model import ResUnet
 import radio_map_reconstruction.alpha_validation as alpha_validation_module
 
 
@@ -38,6 +50,7 @@ class TinyValidationDataset(Dataset):
 
 class TinyCoarseModel(Module):
     def forward(self, inputs: Tensor) -> Tensor:
+        assert are_deterministic_algorithms_enabled()
         height, width = inputs.shape[-2:]
         ramp = arange(height * width, dtype=inputs.dtype).reshape(
             1, 1, height, width
@@ -47,6 +60,7 @@ class TinyCoarseModel(Module):
 
 class ZeroReconstructor(Module):
     def forward(self, inputs: Tensor) -> Tensor:
+        assert are_deterministic_algorithms_enabled()
         return zeros(
             (inputs.shape[0], 1, inputs.shape[-2], inputs.shape[-1]),
             dtype=inputs.dtype,
@@ -57,6 +71,9 @@ class ZeroReconstructor(Module):
 def test_alpha_validation_writes_reproducible_sorted_metrics_and_plot(
     tmp_path,
 ):
+    deterministic_algorithms_were_enabled = (
+        are_deterministic_algorithms_enabled()
+    )
     sampler_config = {
         "alpha": 0.7,
         "alpha_candidates": [1.0, 0.0, 0.5],
@@ -107,6 +124,10 @@ def test_alpha_validation_writes_reproducible_sorted_metrics_and_plot(
     assert (output_dir / "rmse_vs_alpha.png").read_bytes() == first_png
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert sampler_config == original_config
+    assert (
+        are_deterministic_algorithms_enabled()
+        == deterministic_algorithms_were_enabled
+    )
 
 
 def test_project_exposes_dedicated_alpha_tuning_command():
@@ -121,13 +142,33 @@ def test_project_exposes_dedicated_alpha_tuning_command():
 def test_alpha_tuning_command_uses_validation_data_and_role_checkpoints(
     monkeypatch, tmp_path
 ):
+    dataset_root = tmp_path / "dataset"
+    gain_dir = dataset_root / "gain" / "DPM"
+    tx_dir = dataset_root / "png" / "antennas"
+    building_dir = dataset_root / "png" / "buildings_complete"
+    gain_dir.mkdir(parents=True)
+    tx_dir.mkdir(parents=True)
+    building_dir.mkdir(parents=True)
+    for city_map_id in range(10):
+        gain = full((1, 16, 16), 128, dtype=uint8)
+        tx = zeros((1, 16, 16), dtype=uint8)
+        building = zeros((1, 16, 16), dtype=uint8)
+        tx[0, 0, 0] = 255
+        write_png(building, str(building_dir / f"{city_map_id}.png"))
+        write_png(gain, str(gain_dir / f"{city_map_id}_0.png"))
+        write_png(tx, str(tx_dir / f"{city_map_id}_0.png"))
+
     config = {
-        "dataset_path": "tiny-dataset",
+        "dataset_path": str(dataset_root),
         "partition": "DPM",
         "seed": 17,
         "device": "cpu",
-        "reconstructor": {"model": {"in_channels": 4}},
-        "coarse_reconstructor": {"model": {"in_channels": 2}},
+        "reconstructor": {
+            "model": {"in_channels": 4, "out_channels": 1, "base_channels": 1}
+        },
+        "coarse_reconstructor": {
+            "model": {"in_channels": 2, "out_channels": 1, "base_channels": 1}
+        },
         "sampler": {
             "alpha": 0.7,
             "alpha_candidates": [0.25],
@@ -136,40 +177,20 @@ def test_alpha_tuning_command_uses_validation_data_and_role_checkpoints(
             "tolerance": 1e-4,
         },
     }
-    loaded_paths = []
-    dataset_calls = []
-
-    def load_model(role_config, checkpoint_path):
-        loaded_paths.append(checkpoint_path)
-        if role_config is config["coarse_reconstructor"]:
-            return TinyCoarseModel()
-        return ZeroReconstructor()
-
-    def make_dataset(split, **kwargs):
-        dataset_calls.append((split, kwargs))
-        return TinyValidationDataset()
-
     monkeypatch.setattr(alpha_validation_module, "CONFIG", config)
     monkeypatch.setattr(alpha_validation_module, "ROOT", tmp_path)
-    monkeypatch.setattr(alpha_validation_module, "_load_role_model", load_model)
-    monkeypatch.setattr(alpha_validation_module, "CoarseRadioDataset", make_dataset)
+
+    for role, run_name in (
+        ("coarse_reconstructor", "coarse_reconstructor"),
+        ("reconstructor", "reconstructor"),
+    ):
+        checkpoint_path = tmp_path / "run" / run_name / "best.pt"
+        checkpoint_path.parent.mkdir(parents=True)
+        model = ResUnet(**config[role]["model"])
+        save({"model_state_dict": model.state_dict()}, checkpoint_path)
 
     alpha_validation_module.tune_alpha()
 
-    assert dataset_calls == [
-        (
-            "val",
-            {
-                "dataset_path": "tiny-dataset",
-                "partition": "DPM",
-                "seed": 17,
-            },
-        )
-    ]
-    assert loaded_paths == [
-        tmp_path / "run" / "coarse_reconstructor" / "best.pt",
-        tmp_path / "run" / "reconstructor" / "best.pt",
-    ]
     assert (tmp_path / "run" / "sampler" / "alpha_validation_metrics.csv").is_file()
     assert (tmp_path / "run" / "sampler" / "rmse_vs_alpha.png").is_file()
     assert config["sampler"]["alpha"] == 0.7

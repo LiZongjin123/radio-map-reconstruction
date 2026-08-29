@@ -3,7 +3,17 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from torch import Tensor, cat, inference_mode, load, stack
+from torch import (
+    Tensor,
+    are_deterministic_algorithms_enabled,
+    backends,
+    cat,
+    inference_mode,
+    is_deterministic_algorithms_warn_only_enabled,
+    load,
+    stack,
+    use_deterministic_algorithms,
+)
 from torch.nn import Module
 from torch.utils.data import Dataset
 from yaml import safe_load
@@ -83,8 +93,19 @@ def run_alpha_validation(
 
     coarse_was_training = coarse_model.training
     reconstructor_was_training = reconstructor.training
+    deterministic_algorithms_were_enabled = (
+        are_deterministic_algorithms_enabled()
+    )
+    deterministic_warn_only_was_enabled = (
+        is_deterministic_algorithms_warn_only_enabled()
+    )
+    cudnn_deterministic_was_enabled = backends.cudnn.deterministic
+    cudnn_benchmark_was_enabled = backends.cudnn.benchmark
     coarse_model.eval()
     reconstructor.eval()
+    use_deterministic_algorithms(True)
+    backends.cudnn.deterministic = True
+    backends.cudnn.benchmark = False
     rmse_sums = {alpha: 0.0 for alpha in candidates}
     case_counts = {alpha: 0 for alpha in candidates}
 
@@ -147,6 +168,12 @@ def run_alpha_validation(
     finally:
         coarse_model.train(coarse_was_training)
         reconstructor.train(reconstructor_was_training)
+        use_deterministic_algorithms(
+            deterministic_algorithms_were_enabled,
+            warn_only=deterministic_warn_only_was_enabled,
+        )
+        backends.cudnn.deterministic = cudnn_deterministic_was_enabled
+        backends.cudnn.benchmark = cudnn_benchmark_was_enabled
 
     metrics = {
         alpha: rmse_sums[alpha] / case_counts[alpha] for alpha in candidates

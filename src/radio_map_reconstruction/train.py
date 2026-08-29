@@ -10,8 +10,11 @@ from torch.optim import Adam, Optimizer
 from tqdm.auto import tqdm
 from torch.utils.data import DataLoader
 from yaml import safe_load
-from radio_map_reconstruction.artifacts import RECONSTRUCTOR_RUN_PATH
-from radio_map_reconstruction.data import RadioDataset
+from radio_map_reconstruction.artifacts import (
+    COARSE_RECONSTRUCTOR_RUN_PATH,
+    RECONSTRUCTOR_RUN_PATH,
+)
+from radio_map_reconstruction.data import CoarseRadioDataset, RadioDataset
 from radio_map_reconstruction.loss import RadioMapLoss, normalized_mse_per_sample
 from radio_map_reconstruction.model import ResUnet
 
@@ -54,7 +57,8 @@ def eval_one_epoch(
         dataloader: DataLoader,
         criterion: Module,
         epoch: int,
-        epoch_num: int
+        epoch_num: int,
+        sample_count_channel: int | None = 3,
 ) -> tuple[float, float, dict[int, float]]:
     model.eval()
     progress = tqdm(dataloader, desc=f"eval {epoch + 1}/{epoch_num}", unit="batch", leave=True)
@@ -78,17 +82,20 @@ def eval_one_epoch(
             total_rmse += rmse_per_sample.sum().item()
             total_samples += batch_size
 
-            sample_counts = inputs[:, 3].flatten(start_dim=1).sum(dim=1)
-            for sample_count, rmse in zip(
-                sample_counts.tolist(), rmse_per_sample.tolist(), strict=True
-            ):
-                count = int(sample_count)
-                rmse_sums_by_sample_count[count] = (
-                    rmse_sums_by_sample_count.get(count, 0.0) + rmse
-                )
-                case_counts_by_sample_count[count] = (
-                    case_counts_by_sample_count.get(count, 0) + 1
-                )
+            if sample_count_channel is not None:
+                sample_counts = inputs[:, sample_count_channel].flatten(
+                    start_dim=1
+                ).sum(dim=1)
+                for sample_count, rmse in zip(
+                    sample_counts.tolist(), rmse_per_sample.tolist(), strict=True
+                ):
+                    count = int(sample_count)
+                    rmse_sums_by_sample_count[count] = (
+                        rmse_sums_by_sample_count.get(count, 0.0) + rmse
+                    )
+                    case_counts_by_sample_count[count] = (
+                        case_counts_by_sample_count.get(count, 0) + 1
+                    )
 
             progress.set_postfix(
                 loss = f"{(total_loss / total_samples):.6f}",
@@ -117,6 +124,7 @@ def run_training(
         epoch_num: int,
         run_dir: str | Path,
         metric_logger: Callable[[dict[str, int | float]], None] | None = None,
+        val_sample_count_channel: int | None = 3,
 ) -> None:
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -139,13 +147,21 @@ def run_training(
             train_loss = train_one_epoch(
                 model, train_loader, optimizer, criterion, epoch, epoch_num
             )
-            val_loss, _, val_rmse_by_sample_count = eval_one_epoch(
-                model, val_loader, criterion, epoch, epoch_num
+            val_loss, val_rmse, val_rmse_by_sample_count = eval_one_epoch(
+                model,
+                val_loader,
+                criterion,
+                epoch,
+                epoch_num,
+                sample_count_channel=val_sample_count_channel,
             )
-            val_mean_per_sample_normalized_rmse = sum(
-                val_rmse_by_sample_count[sample_count]
-                for sample_count in RadioDataset.EVALUATION_SAMPLE_COUNTS
-            ) / len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+            if val_sample_count_channel is None:
+                val_mean_per_sample_normalized_rmse = val_rmse
+            else:
+                val_mean_per_sample_normalized_rmse = sum(
+                    val_rmse_by_sample_count[sample_count]
+                    for sample_count in RadioDataset.EVALUATION_SAMPLE_COUNTS
+                ) / len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
 
             metrics: dict[str, int | float] = {
                 "epoch": epoch + 1,
@@ -231,6 +247,66 @@ def train() -> None:
             epoch_num=reconstructor_config["training"]["epochs"],
             run_dir=ROOT / RECONSTRUCTOR_RUN_PATH,
             metric_logger=swanlab.log,
+        )
+    finally:
+        swanlab.finish()
+
+
+def train_coarse() -> None:
+    coarse_config = CONFIG["coarse_reconstructor"]
+    train_data = CoarseRadioDataset("train")
+    val_data = CoarseRadioDataset("val")
+
+    train_loader = DataLoader(
+        dataset=train_data,
+        num_workers=coarse_config["data_loader"]["num_workers"],
+        batch_size=coarse_config["data_loader"]["batch_size"],
+        shuffle=True,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        dataset=val_data,
+        num_workers=coarse_config["data_loader"]["num_workers"],
+        batch_size=coarse_config["data_loader"]["batch_size"],
+        shuffle=True,
+        pin_memory=True,
+    )
+
+    swanlab.init(
+        project=CONFIG["swanlab"]["project"],
+        workspace=CONFIG["swanlab"]["workspace"],
+        config={
+            "learning_rate": coarse_config["optimizer"]["learning_rate"],
+            "epochs": coarse_config["training"]["epochs"],
+            "t_max": coarse_config["scheduler"]["t_max"],
+            "eta_min": coarse_config["scheduler"]["eta_min"],
+        },
+    )
+
+    res_unet = ResUnet(**coarse_config["model"]).to(CONFIG["device"])
+    criterion = RadioMapLoss()
+    optimizer = Adam(
+        res_unet.parameters(),
+        lr=coarse_config["optimizer"]["learning_rate"],
+    )
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=coarse_config["scheduler"]["t_max"],
+        eta_min=coarse_config["scheduler"]["eta_min"],
+    )
+
+    try:
+        run_training(
+            model=res_unet,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch_num=coarse_config["training"]["epochs"],
+            run_dir=ROOT / COARSE_RECONSTRUCTOR_RUN_PATH,
+            metric_logger=swanlab.log,
+            val_sample_count_channel=None,
         )
     finally:
         swanlab.finish()

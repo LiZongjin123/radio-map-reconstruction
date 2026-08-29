@@ -118,9 +118,9 @@ class RadioDataset(Dataset):
             )
             generator = Generator().manual_seed(derived_seed)
 
-        gain = self.__read_image(gain_path)
-        tx = self.__read_image(tx_path)
-        building_map = self.__read_image(building_map_path)
+        gain = self._read_image(gain_path)
+        tx = self._read_image(tx_path)
+        building_map = self._read_image(building_map_path)
         gain_mask = self.__random_sample(
             gain, tx, building_map, sample_count, generator
         )
@@ -155,7 +155,7 @@ class RadioDataset(Dataset):
 
         return gain_mask
 
-    def __read_image(self, path: str) -> Tensor:
+    def _read_image(self, path: str) -> Tensor:
         image = decode_image(
             path, 
             mode=ImageReadMode.GRAY
@@ -165,4 +165,22 @@ class RadioDataset(Dataset):
             dtype=float32,
             scale=True
         )
+
+
+class CoarseRadioDataset(RadioDataset):
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> tuple[Tensor, dict[str, Tensor]]:
+        gain_path, tx_path, building_map_path = self.samples[index]
+        gain = self._read_image(gain_path)
+        tx = self._read_image(tx_path)
+        building_map = self._read_image(building_map_path)
+
+        targets = {
+            "gain": gain,
+            "mask": (tx < 0.5) & (building_map < 0.5),
+        }
+        return cat((tx, building_map)), targets
 

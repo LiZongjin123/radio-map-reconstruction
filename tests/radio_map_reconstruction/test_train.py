@@ -1,4 +1,6 @@
 import csv
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 
 from pytest import approx
@@ -18,6 +20,7 @@ from radio_map_reconstruction.train import (
 import radio_map_reconstruction.train as train_module
 
 EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_main_reconstructor_configuration_is_nested():
@@ -29,6 +32,36 @@ def test_main_reconstructor_configuration_is_nested():
         "optimizer",
         "scheduler",
     }
+
+
+def test_coarse_reconstructor_configuration_is_nested_with_agreed_defaults():
+    assert set(CONFIG["coarse_reconstructor"]) == {
+        "model",
+        "training",
+        "data_loader",
+        "optimizer",
+        "scheduler",
+    }
+    assert CONFIG["coarse_reconstructor"] == {
+        "model": {
+            "in_channels": 2,
+            "out_channels": 1,
+            "base_channels": 32,
+        },
+        "training": {"epochs": 50},
+        "data_loader": {"num_workers": 16, "batch_size": 32},
+        "optimizer": {"learning_rate": 0.0003},
+        "scheduler": {"t_max": 50, "eta_min": 0.000001},
+    }
+
+
+def test_project_exposes_dedicated_coarse_training_command():
+    with (ROOT / "pyproject.toml").open("rb") as file:
+        project = tomllib.load(file)
+
+    assert project["project"]["scripts"]["train-coarse"] == (
+        "radio_map_reconstruction.train:train_coarse"
+    )
 
 
 class PassThroughModel(Module):
@@ -192,6 +225,54 @@ def test_training_writes_history_and_selects_best_average_rmse_without_clearing_
     assert sentinel.read_text(encoding="utf-8") == "keep"
 
 
+def test_coarse_training_runs_end_to_end_and_selects_best_validation_rmse(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setitem(CONFIG, "device", "cpu")
+    main_artifact = tmp_path / "reconstructor" / "best.pt"
+    main_artifact.parent.mkdir()
+    main_artifact.write_text("main", encoding="utf-8")
+
+    inputs = tensor(0.0).new_zeros((2, 1, 2))
+    train_targets = {
+        "gain": tensor(1.0).expand(1, 1, 2),
+        "mask": tensor(True).expand(1, 1, 2),
+    }
+    val_targets = {
+        "gain": tensor(0.5).expand(1, 1, 2),
+        "mask": tensor(True).expand(1, 1, 2),
+    }
+    model = ConstantPredictionModel(0.0)
+    optimizer = SGD(model.parameters(), lr=0.25)
+
+    run_dir = tmp_path / "coarse_reconstructor"
+    run_training(
+        model=model,
+        train_loader=DataLoader([(inputs, train_targets)], batch_size=1),
+        val_loader=DataLoader([(inputs, val_targets)], batch_size=1),
+        criterion=RadioMapLoss(),
+        optimizer=optimizer,
+        scheduler=ExponentialLR(optimizer, gamma=1.0),
+        epoch_num=2,
+        run_dir=run_dir,
+        val_sample_count_channel=None,
+    )
+
+    with (run_dir / "history.csv").open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+
+    assert [float(row["val_mean_per_sample_normalized_rmse"]) for row in rows] == (
+        approx([0.0, 0.25])
+    )
+    assert load(run_dir / "best.pt", weights_only=True)["model_state_dict"][
+        "prediction"
+    ].item() == approx(0.5)
+    assert load(run_dir / "latest.pt", weights_only=True)["model_state_dict"][
+        "prediction"
+    ].item() == approx(0.75)
+    assert main_artifact.read_text(encoding="utf-8") == "main"
+
+
 def test_main_training_uses_nested_reconstructor_config_and_role_directory(
     monkeypatch, tmp_path
 ):
@@ -269,3 +350,90 @@ def test_main_training_uses_nested_reconstructor_config_and_role_directory(
     assert captured["run_training"]["optimizer"].defaults["lr"] == approx(0.01)
     assert captured["run_training"]["scheduler"].T_max == 3
     assert captured["run_training"]["scheduler"].eta_min == approx(0.001)
+
+
+def test_coarse_training_uses_nested_config_dataset_and_role_directory(
+    monkeypatch, tmp_path
+):
+    config = {
+        "device": "cpu",
+        "coarse_reconstructor": {
+            "model": {
+                "in_channels": 2,
+                "out_channels": 1,
+                "base_channels": 8,
+            },
+            "training": {"epochs": 4},
+            "data_loader": {"num_workers": 0, "batch_size": 3},
+            "optimizer": {"learning_rate": 0.02},
+            "scheduler": {"t_max": 4, "eta_min": 0.002},
+        },
+        "swanlab": {"project": "project", "workspace": "workspace"},
+    }
+    captured = {"datasets": [], "loaders": []}
+
+    class TinyModel(Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = Parameter(tensor(0.0))
+
+    def make_dataset(split):
+        captured["datasets"].append(split)
+        return split
+
+    def make_model(**kwargs):
+        captured["model_config"] = kwargs
+        return TinyModel()
+
+    def make_loader(**kwargs):
+        captured["loaders"].append(kwargs)
+        return kwargs["dataset"]
+
+    monkeypatch.setattr(train_module, "CONFIG", config)
+    monkeypatch.setattr(train_module, "ROOT", tmp_path)
+    monkeypatch.setattr(train_module, "CoarseRadioDataset", make_dataset)
+    monkeypatch.setattr(train_module, "DataLoader", make_loader)
+    monkeypatch.setattr(train_module, "ResUnet", make_model)
+    monkeypatch.setattr(
+        train_module,
+        "swanlab",
+        SimpleNamespace(
+            init=lambda **kwargs: None,
+            log=lambda metrics: None,
+            finish=lambda: None,
+        ),
+    )
+    monkeypatch.setattr(
+        train_module,
+        "run_training",
+        lambda **kwargs: captured.update(run_training=kwargs),
+    )
+
+    train_module.train_coarse()
+
+    assert captured["datasets"] == ["train", "val"]
+    assert captured["model_config"] == config["coarse_reconstructor"]["model"]
+    assert captured["loaders"] == [
+        {
+            "dataset": "train",
+            "num_workers": 0,
+            "batch_size": 3,
+            "shuffle": True,
+            "pin_memory": True,
+        },
+        {
+            "dataset": "val",
+            "num_workers": 0,
+            "batch_size": 3,
+            "shuffle": True,
+            "pin_memory": True,
+        },
+    ]
+    assert captured["run_training"]["epoch_num"] == 4
+    assert captured["run_training"]["run_dir"] == (
+        tmp_path / "run" / "coarse_reconstructor"
+    )
+    assert captured["run_training"]["val_sample_count_channel"] is None
+    assert captured["run_training"]["optimizer"].defaults["lr"] == approx(0.02)
+    assert captured["run_training"]["scheduler"].T_max == 4
+    assert captured["run_training"]["scheduler"].eta_min == approx(0.002)

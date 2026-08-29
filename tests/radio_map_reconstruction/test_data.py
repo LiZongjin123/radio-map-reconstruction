@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from pytest import fixture
-from radio_map_reconstruction.data import RadioDataset
+from radio_map_reconstruction.data import CoarseRadioDataset, RadioDataset
 from torch import Tensor, full, uint8, zeros
 from torchvision.io import write_png
 
@@ -41,6 +41,30 @@ def test_get_item(dataset):
     assert isinstance(label, dict)
     assert input.shape == (4, 256, 256)
     assert label["gain"].shape == label["mask"].shape == (1, 256, 256)
+
+
+def test_coarse_dataset_reuses_city_map_split_and_returns_tx_then_building(
+    tmp_path: Path,
+):
+    create_image_dataset(tmp_path)
+    main_dataset = RadioDataset(
+        "val", dataset_path=tmp_path, partition="DPM", seed=17
+    )
+    coarse_dataset = CoarseRadioDataset(
+        "val", dataset_path=tmp_path, partition="DPM", seed=17
+    )
+
+    inputs, targets = coarse_dataset[0]
+
+    assert coarse_dataset.samples == main_dataset.samples
+    assert len(coarse_dataset) == len(coarse_dataset.samples)
+    assert inputs.shape == (2, 16, 16)
+    assert inputs[0, 0, 1].item() == 1.0
+    assert inputs[1, 0, 0].item() == 1.0
+    assert targets["gain"].shape == targets["mask"].shape == (1, 16, 16)
+    assert not targets["mask"][0, 0, 0]
+    assert not targets["mask"][0, 0, 1]
+    assert targets["mask"][0, 0, 2]
 
 
 def test_training_sampling_is_dynamic_and_stays_in_valid_receiving_area(tmp_path: Path):

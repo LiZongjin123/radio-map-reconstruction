@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 RECONSTRUCTOR_RUN_PATH = Path("run") / "reconstructor"
+COARSE_RECONSTRUCTOR_RUN_PATH = Path("run") / "coarse_reconstructor"
 EVALUATION_BUNDLE_CASES = (
     (0, 10),
     (1, 50),

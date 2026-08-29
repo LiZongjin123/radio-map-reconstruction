@@ -24,15 +24,18 @@ from radio_map_reconstruction.artifacts import (
     EVALUATION_BUNDLE_CASES,
     EVALUATION_RUN_PATH,
     RECONSTRUCTOR_RUN_PATH,
+    SAMPLING_DIAGNOSTIC_CASES,
 )
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.loss import normalized_mse_per_sample
 from radio_map_reconstruction.model import ResUnet
 from radio_map_reconstruction.plot import (
     EvaluationBundle,
+    SamplingDiagnosticFigure,
     evaluation_error_upper_limit,
     save_evaluation_bundle_figure,
     save_rmse_comparison_curve,
+    save_sampling_diagnostic_figure,
 )
 from radio_map_reconstruction.sampling import (
     gradient_distance_weighted_clustering_sample,
@@ -71,13 +74,15 @@ def _guided_sampling_inputs(
     sampler_config: dict,
     global_seed: int,
     sample_id: str,
-) -> Tensor:
+    sample_index: int,
+) -> tuple[Tensor, list[SamplingDiagnosticFigure]]:
     tx_map = inputs[0, 1:2]
     building_map = inputs[0, 2:3]
     coarse_map = coarse_model(cat((tx_map, building_map)).unsqueeze(0))[0]
     guided_inputs = []
+    diagnostic_figures = []
     for sample_count_index, sample_count in enumerate(sample_counts):
-        sampling_mask, _ = gradient_distance_weighted_clustering_sample(
+        sampling_mask, diagnostics = gradient_distance_weighted_clustering_sample(
             coarse_map,
             inputs[sample_count_index, 1:2],
             inputs[sample_count_index, 2:3],
@@ -99,7 +104,29 @@ def _guided_sampling_inputs(
                 )
             )
         )
-    return stack(guided_inputs)
+        if (sample_index, sample_count) in SAMPLING_DIAGNOSTIC_CASES:
+            diagnostic_figures.append(
+                SamplingDiagnosticFigure(
+                    sample_count=sample_count,
+                    coarse_map=diagnostics.coarse_map[0].cpu().numpy(),
+                    normalized_gradient=(
+                        diagnostics.normalized_gradient[0].cpu().numpy()
+                    ),
+                    normalized_distance=(
+                        diagnostics.normalized_distance[0].cpu().numpy()
+                    ),
+                    score=diagnostics.score[0].cpu().numpy(),
+                    cluster_labels=diagnostics.cluster_labels[0].cpu().numpy(),
+                    sampling_mask=sampling_mask[0].bool().cpu().numpy(),
+                    invalid_area=(
+                        diagnostics.cluster_labels[0] < 0
+                    ).cpu().numpy(),
+                    transmitter_point=(
+                        diagnostics.transmitter_point.cpu().numpy()
+                    ),
+                )
+            )
+    return stack(guided_inputs), diagnostic_figures
 
 
 def _accumulate_rmse(
@@ -171,6 +198,7 @@ def _random_evaluation_bundles(
 def _write_evaluation_artifacts(
     evaluation_dir: Path,
     bundles: list[EvaluationBundle],
+    sampling_diagnostics: list[SamplingDiagnosticFigure],
     rmse_by_sample_count: dict[int, StrategyRmse],
 ) -> None:
     for bundle_index, bundle in enumerate(bundles):
@@ -191,6 +219,15 @@ def _write_evaluation_artifacts(
             output_path=(
                 evaluation_dir
                 / f"evaluation_bundle_{bundle.sample_count}_samples.png"
+            ),
+        )
+    for diagnostic in sampling_diagnostics:
+        save_sampling_diagnostic_figure(
+            diagnostic,
+            output_path=(
+                evaluation_dir
+                / "gradient_distance_guided_sampling_diagnostics_"
+                f"{diagnostic.sample_count}_samples.png"
             ),
         )
     save_rmse_comparison_curve(
@@ -250,11 +287,15 @@ def run_evaluation(
             f"one per Valid Sampling Point count; found {sample_total} cases"
         )
     sample_num = sample_total // len(sample_counts)
-    if sample_num < max(index for index, _ in EVALUATION_BUNDLE_CASES) + 1:
+    fixed_case_indices = tuple(
+        index
+        for index, _ in EVALUATION_BUNDLE_CASES + SAMPLING_DIAGNOSTIC_CASES
+    )
+    if sample_num < max(fixed_case_indices) + 1:
         raise ValueError(
             "test dataset must contain at least "
-            f"{max(index for index, _ in EVALUATION_BUNDLE_CASES) + 1} samples "
-            "to render the fixed Evaluation Bundle cases"
+            f"{max(fixed_case_indices) + 1} samples to render the fixed "
+            "Evaluation Bundle and Sampling Diagnostic cases"
         )
 
     model_was_training = model.training
@@ -276,6 +317,7 @@ def run_evaluation(
     random_rmse_sums = {sample_count: 0.0 for sample_count in sample_counts}
     guided_rmse_sums = {sample_count: 0.0 for sample_count in sample_counts}
     bundles: list[EvaluationBundle] = []
+    sampling_diagnostics: list[SamplingDiagnosticFigure] = []
 
     try:
         with inference_mode():
@@ -314,7 +356,7 @@ def run_evaluation(
                     )
                 )
 
-                guided_inputs = _guided_sampling_inputs(
+                guided_inputs, case_diagnostics = _guided_sampling_inputs(
                     coarse_model=coarse_model,
                     gain=targets["gain"],
                     inputs=inputs,
@@ -326,7 +368,9 @@ def run_evaluation(
                         sample_index,
                         fallback_prefix="test",
                     ),
+                    sample_index=sample_index,
                 )
+                sampling_diagnostics.extend(case_diagnostics)
                 guided_outputs = model(guided_inputs)
                 _accumulate_rmse(guided_outputs, targets, guided_rmse_sums)
 
@@ -357,7 +401,12 @@ def run_evaluation(
     evaluation_dir = Path(evaluation_dir)
     evaluation_dir.mkdir(parents=True, exist_ok=True)
     _write_test_metrics(evaluation_dir, rmse_by_sample_count)
-    _write_evaluation_artifacts(evaluation_dir, bundles, rmse_by_sample_count)
+    _write_evaluation_artifacts(
+        evaluation_dir,
+        bundles,
+        sampling_diagnostics,
+        rmse_by_sample_count,
+    )
     return rmse_by_sample_count
 
 

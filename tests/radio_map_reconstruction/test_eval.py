@@ -7,6 +7,7 @@ from torch import Tensor, are_deterministic_algorithms_enabled, tensor
 from torch.nn import Module, Parameter
 from torch.utils.data import Dataset
 
+from radio_map_reconstruction.artifacts import SAMPLING_DIAGNOSTIC_CASES
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.eval import (
     CONFIG,
@@ -18,7 +19,7 @@ import radio_map_reconstruction.eval as eval_module
 
 class FixedEvaluationDataset(Dataset):
     def __len__(self) -> int:
-        return 4 * len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+        return 8 * len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
 
     def __getitem__(self, index: int) -> tuple[Tensor, dict[str, Tensor]]:
         sample_index, sample_count_index = divmod(
@@ -93,6 +94,12 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
     deterministic_algorithms_were_enabled = (
         are_deterministic_algorithms_enabled()
     )
+    assert SAMPLING_DIAGNOSTIC_CASES == (
+        (4, 10),
+        (5, 50),
+        (6, 100),
+        (7, 200),
+    )
     monkeypatch.setitem(CONFIG, "device", "cpu")
     evaluation_dir = tmp_path / "evaluation"
     evaluation_dir.mkdir()
@@ -142,15 +149,15 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
     assert [
         float(row["random_mean_per_sample_normalized_rmse"])
         for row in first_rows
-    ] == approx([0.75] * 10)
+    ] == approx([0.55] * 10)
     assert [
         float(row["guided_mean_per_sample_normalized_rmse"])
         for row in first_rows
-    ] == approx([0.75] * 10)
+    ] == approx([0.55] * 10)
     assert list(first_rmse) == list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
     for comparison in first_rmse.values():
-        assert comparison.random_rmse == approx(0.75)
-        assert comparison.guided_rmse == approx(0.75)
+        assert comparison.random_rmse == approx(0.55)
+        assert comparison.guided_rmse == approx(0.55)
     assert second_rmse == first_rmse
     assert second_rows == first_rows
 
@@ -163,7 +170,7 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
             list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
         )
         assert sparse_values == approx([ground_truth_value] * 10)
-    assert len(first_model.calls) == 8
+    assert len(first_model.calls) == 16
     assert first_model.calls == second_model.calls
 
     assert sorted(first_bundles) == [
@@ -203,6 +210,10 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
         "evaluation_bundle_50_samples.png",
         "evaluation_bundle_100_samples.png",
         "evaluation_bundle_200_samples.png",
+        "gradient_distance_guided_sampling_diagnostics_10_samples.png",
+        "gradient_distance_guided_sampling_diagnostics_50_samples.png",
+        "gradient_distance_guided_sampling_diagnostics_100_samples.png",
+        "gradient_distance_guided_sampling_diagnostics_200_samples.png",
     }
     assert list(second_pngs) == list(first_pngs)
     for name, contents in first_pngs.items():

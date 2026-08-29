@@ -34,6 +34,19 @@ class EvaluationBundle:
     absolute_error: np.ndarray
 
 
+@dataclass(frozen=True)
+class SamplingDiagnosticFigure:
+    sample_count: int
+    coarse_map: np.ndarray
+    normalized_gradient: np.ndarray
+    normalized_distance: np.ndarray
+    score: np.ndarray
+    cluster_labels: np.ndarray
+    sampling_mask: np.ndarray
+    invalid_area: np.ndarray
+    transmitter_point: np.ndarray
+
+
 def _read_numeric_columns(
     path: Path,
     columns: tuple[str, ...],
@@ -273,6 +286,109 @@ def save_evaluation_bundle_figure(
     error_colorbar.set_label("Absolute Error")
     figure.suptitle(
         f"Evaluation Bundle Figure — {bundle.sample_count} Valid Sampling Points"
+    )
+    figure.savefig(output_path, dpi=300)
+    plt.close(figure)
+
+
+def save_sampling_diagnostic_figure(
+    diagnostic: SamplingDiagnosticFigure,
+    *,
+    output_path: Path,
+) -> None:
+    image_fields = (
+        diagnostic.coarse_map,
+        diagnostic.normalized_gradient,
+        diagnostic.normalized_distance,
+        diagnostic.score,
+        diagnostic.cluster_labels,
+        diagnostic.sampling_mask,
+        diagnostic.invalid_area,
+    )
+    expected_shape = diagnostic.coarse_map.shape
+    if len(expected_shape) != 2 or any(
+        values.shape != expected_shape for values in image_fields
+    ):
+        raise ValueError("Sampling diagnostic maps must share one 2D shape")
+    if diagnostic.transmitter_point.shape != (2,):
+        raise ValueError("transmitter_point must contain one row-column pair")
+    sampling_mask = diagnostic.sampling_mask.astype(bool)
+    invalid_area = diagnostic.invalid_area.astype(bool)
+    selected_points = np.argwhere(sampling_mask)
+    if selected_points.shape[0] != diagnostic.sample_count:
+        raise ValueError(
+            "Sampling diagnostic must contain exactly "
+            f"{diagnostic.sample_count} Valid Sampling Points"
+        )
+    if np.any(sampling_mask & invalid_area):
+        raise ValueError("Valid Sampling Points cannot occupy the invalid area")
+
+    figure, axes = plt.subplots(
+        1,
+        5,
+        figsize=(18, 4.2),
+        constrained_layout=True,
+    )
+    continuous_colormap = matplotlib.colormaps["viridis"].with_extremes(
+        bad="lightgray"
+    )
+    cluster_colormap = matplotlib.colormaps["turbo"].resampled(
+        diagnostic.sample_count
+    ).with_extremes(bad="lightgray")
+    panels = (
+        ("Coarse Reconstruction", diagnostic.coarse_map, continuous_colormap),
+        (
+            "Normalized Gradient",
+            diagnostic.normalized_gradient,
+            continuous_colormap,
+        ),
+        (
+            "Normalized Distance",
+            diagnostic.normalized_distance,
+            continuous_colormap,
+        ),
+        ("Sampling Score", diagnostic.score, continuous_colormap),
+        ("Clustering and Sampling", diagnostic.cluster_labels, cluster_colormap),
+    )
+    for axes_item, (title, values, colormap) in zip(axes, panels, strict=True):
+        axes_item.imshow(
+            np.ma.masked_where(invalid_area, values),
+            cmap=colormap,
+            vmin=0,
+            vmax=(
+                diagnostic.sample_count - 1
+                if title == "Clustering and Sampling"
+                else 1
+            ),
+        )
+        axes_item.set_title(title)
+        axes_item.set_axis_off()
+
+    cluster_axes = axes[-1]
+    cluster_axes.scatter(
+        selected_points[:, 1],
+        selected_points[:, 0],
+        marker="o",
+        s=28,
+        facecolors="none",
+        edgecolors="white",
+        linewidths=0.8,
+        label="Valid Sampling Points",
+    )
+    cluster_axes.scatter(
+        diagnostic.transmitter_point[1],
+        diagnostic.transmitter_point[0],
+        marker="*",
+        s=90,
+        facecolors="gold",
+        edgecolors="black",
+        linewidths=0.7,
+        label="Transmitter",
+    )
+    cluster_axes.legend(loc="lower right", fontsize="small", framealpha=0.9)
+    figure.suptitle(
+        "Gradient-Distance Weighted Clustering Sampling — "
+        f"{diagnostic.sample_count} Valid Sampling Points"
     )
     figure.savefig(output_path, dpi=300)
     plt.close(figure)

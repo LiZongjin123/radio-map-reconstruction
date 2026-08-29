@@ -14,3 +14,9 @@ EVALUATION_BUNDLE_CASES = (
 EVALUATION_BUNDLE_SAMPLE_COUNTS = tuple(
     sample_count for _, sample_count in EVALUATION_BUNDLE_CASES
 )
+SAMPLING_DIAGNOSTIC_CASES = (
+    (4, 10),
+    (5, 50),
+    (6, 100),
+    (7, 200),
+)

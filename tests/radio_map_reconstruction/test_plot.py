@@ -12,7 +12,9 @@ from PIL import Image
 from pytest import approx, fixture, mark, raises
 
 from radio_map_reconstruction.plot import (
+    SamplingDiagnosticFigure,
     run_plotting,
+    save_sampling_diagnostic_figure,
     save_rmse_comparison_curve,
 )
 
@@ -355,6 +357,80 @@ def test_evaluation_bundle_figure_has_report_ready_rendering(
     with Image.open(plots_dir / "evaluation_bundle_10_samples.png") as image:
         assert image.width >= 2500
         assert image.height >= 1800
+
+
+def test_sampling_diagnostic_figure_shows_decision_chain_and_actual_mask(
+    tmp_path, monkeypatch
+):
+    captured_figure = None
+    original_savefig = Figure.savefig
+
+    def capture_figure(figure, output_path, *args, **kwargs):
+        nonlocal captured_figure
+        captured_figure = figure
+        figure.canvas.draw()
+        return original_savefig(figure, output_path, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "savefig", capture_figure)
+    invalid_area = np.zeros((3, 4), dtype=bool)
+    invalid_area[0, 0] = True
+    invalid_area[0, 1] = True
+    sampling_mask = np.zeros((3, 4), dtype=bool)
+    sampling_mask[1, 1] = True
+    sampling_mask[2, 3] = True
+    cluster_labels = np.arange(12).reshape(3, 4)
+    cluster_labels[invalid_area] = -1
+    diagnostic = SamplingDiagnosticFigure(
+        sample_count=2,
+        coarse_map=np.linspace(0, 1, 12).reshape(3, 4),
+        normalized_gradient=np.linspace(1, 0, 12).reshape(3, 4),
+        normalized_distance=np.linspace(0.2, 0.8, 12).reshape(3, 4),
+        score=np.linspace(0.1, 0.9, 12).reshape(3, 4),
+        cluster_labels=cluster_labels,
+        sampling_mask=sampling_mask,
+        invalid_area=invalid_area,
+        transmitter_point=np.asarray([0, 0]),
+    )
+
+    output_path = (
+        tmp_path
+        / "gradient_distance_guided_sampling_diagnostics_2_samples.png"
+    )
+    save_sampling_diagnostic_figure(diagnostic, output_path=output_path)
+
+    assert captured_figure is not None
+    assert [axes.get_title() for axes in captured_figure.axes] == [
+        "Coarse Reconstruction",
+        "Normalized Gradient",
+        "Normalized Distance",
+        "Sampling Score",
+        "Clustering and Sampling",
+    ]
+    assert captured_figure.get_suptitle() == (
+        "Gradient-Distance Weighted Clustering Sampling — "
+        "2 Valid Sampling Points"
+    )
+    for axes in captured_figure.axes:
+        assert np.array_equal(
+            np.ma.getmaskarray(axes.images[0].get_array()), invalid_area
+        )
+        assert np.allclose(axes.images[0].cmap.get_bad(), to_rgba("lightgray"))
+        assert not axes.texts
+    cluster_axes = captured_figure.axes[-1]
+    collections_by_label = {
+        collection.get_label(): collection
+        for collection in cluster_axes.collections
+    }
+    sampling_points = collections_by_label["Valid Sampling Points"]
+    assert np.array_equal(
+        sampling_points.get_offsets(),
+        np.asarray([[1, 1], [3, 2]]),
+    )
+    assert sampling_points.get_facecolors().size == 0
+    transmitter = collections_by_label["Transmitter"]
+    assert transmitter.get_offsets().tolist() == [[0.0, 0.0]]
+    assert len(transmitter.get_paths()[0].vertices) == 11
+    assert output_path.is_file()
 
 
 @mark.parametrize(

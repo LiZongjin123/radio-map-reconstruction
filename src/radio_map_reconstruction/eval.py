@@ -2,7 +2,6 @@ import csv
 from pathlib import Path
 from typing import NamedTuple
 
-import numpy as np
 from torch import (
     Tensor,
     are_deterministic_algorithms_enabled,
@@ -21,7 +20,7 @@ from tqdm.auto import tqdm
 
 from radio_map_reconstruction.artifacts import (
     COARSE_RECONSTRUCTOR_RUN_PATH,
-    EVALUATION_BUNDLE_CASES,
+    EVALUATION_FIGURE_CASES,
     EVALUATION_RUN_PATH,
     RECONSTRUCTOR_RUN_PATH,
     SAMPLING_DIAGNOSTIC_CASES,
@@ -179,7 +178,7 @@ def _random_evaluation_bundles(
     sample_counts: tuple[int, ...],
 ) -> list[EvaluationBundle]:
     bundles = []
-    for bundle_sample_index, bundle_count in EVALUATION_BUNDLE_CASES:
+    for bundle_sample_index, bundle_count in EVALUATION_FIGURE_CASES:
         if sample_index != bundle_sample_index:
             continue
         count_index = sample_counts.index(bundle_count)
@@ -201,16 +200,6 @@ def _write_evaluation_artifacts(
     sampling_diagnostics: list[SamplingDiagnosticData],
     rmse_by_sample_count: dict[int, StrategyRmse],
 ) -> None:
-    for bundle_index, bundle in enumerate(bundles):
-        np.savez_compressed(
-            evaluation_dir / f"evaluation_bundle_{bundle_index}.npz",
-            sample_count=np.asarray(bundle.sample_count),
-            ground_truth=bundle.ground_truth,
-            sampling_mask=bundle.sampling_mask,
-            sparse_map=bundle.sparse_map,
-            reconstruction=bundle.reconstruction,
-            absolute_error=bundle.absolute_error,
-        )
     error_upper_limit = evaluation_error_upper_limit(bundles)
     for bundle in bundles:
         save_evaluation_bundle_figure(
@@ -290,13 +279,13 @@ def run_evaluation(
     sample_num = sample_total // len(sample_counts)
     fixed_case_indices = tuple(
         index
-        for index, _ in EVALUATION_BUNDLE_CASES + SAMPLING_DIAGNOSTIC_CASES
+        for index, _ in EVALUATION_FIGURE_CASES + SAMPLING_DIAGNOSTIC_CASES
     )
     if sample_num < max(fixed_case_indices) + 1:
         raise ValueError(
             "test dataset must contain at least "
             f"{max(fixed_case_indices) + 1} samples to render the fixed "
-            "Evaluation Bundle and Sampling Diagnostic cases"
+            "Evaluation Bundle Figure and Sampling Diagnostic cases"
         )
 
     model_was_training = model.training

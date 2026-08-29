@@ -1,13 +1,16 @@
 import csv
 from pathlib import Path
+import tomllib
 
-import numpy as np
 from pytest import approx
 from torch import Tensor, are_deterministic_algorithms_enabled, tensor
 from torch.nn import Module, Parameter
 from torch.utils.data import Dataset
 
-from radio_map_reconstruction.artifacts import SAMPLING_DIAGNOSTIC_CASES
+from radio_map_reconstruction.artifacts import (
+    EVALUATION_FIGURE_CASES,
+    SAMPLING_DIAGNOSTIC_CASES,
+)
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.eval import (
     CONFIG,
@@ -73,14 +76,6 @@ class RecordingReconstructor(Module):
         )
 
 
-def load_bundles(evaluation_dir):
-    bundles = {}
-    for path in sorted(evaluation_dir.glob("evaluation_bundle_*.npz")):
-        with np.load(path, allow_pickle=False) as bundle:
-            bundles[path.name] = {name: bundle[name].copy() for name in bundle.files}
-    return bundles
-
-
 def read_png_bytes(evaluation_dir):
     return {
         path.name: path.read_bytes()
@@ -88,11 +83,17 @@ def read_png_bytes(evaluation_dir):
     }
 
 
-def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
+def test_unified_evaluation_writes_reproducible_final_artifacts_without_npz(
     monkeypatch, tmp_path
 ):
     deterministic_algorithms_were_enabled = (
         are_deterministic_algorithms_enabled()
+    )
+    assert EVALUATION_FIGURE_CASES == (
+        (0, 10),
+        (1, 50),
+        (2, 100),
+        (3, 200),
     )
     assert SAMPLING_DIAGNOSTIC_CASES == (
         (4, 10),
@@ -126,16 +127,10 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
             newline="", encoding="utf-8"
         ) as file:
             rows = list(csv.DictReader(file))
-        return model, rmse_by_sample_count, rows, read_png_bytes(
-            evaluation_dir
-        ), load_bundles(evaluation_dir)
+        return model, rmse_by_sample_count, rows, read_png_bytes(evaluation_dir)
 
-    first_model, first_rmse, first_rows, first_pngs, first_bundles = (
-        run_once()
-    )
-    second_model, second_rmse, second_rows, second_pngs, second_bundles = (
-        run_once()
-    )
+    first_model, first_rmse, first_rows, first_pngs = run_once()
+    second_model, second_rmse, second_rows, second_pngs = run_once()
 
     assert list(first_rows[0]) == [
         "sample_count",
@@ -173,37 +168,6 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
     assert len(first_model.calls) == 16
     assert first_model.calls == second_model.calls
 
-    assert sorted(first_bundles) == [
-        f"evaluation_bundle_{index}.npz" for index in range(4)
-    ]
-    expected_fields = {
-        "sample_count",
-        "ground_truth",
-        "sampling_mask",
-        "sparse_map",
-        "reconstruction",
-        "absolute_error",
-    }
-    for index, sample_count in enumerate((10, 50, 100, 200)):
-        bundle = first_bundles[f"evaluation_bundle_{index}.npz"]
-        assert set(bundle) == expected_fields
-        assert bundle["sample_count"].item() == sample_count
-        assert bundle["ground_truth"].shape == (1, 202)
-        assert bundle["sampling_mask"].sum() == sample_count
-        assert np.all(bundle["sampling_mask"][:, :2] == 0)
-        assert np.all(bundle["sparse_map"][bundle["sampling_mask"] == 0] == 0)
-        assert bundle["reconstruction"][0, 0] == 1
-        assert bundle["reconstruction"][0, 1] == 0
-        assert np.all(bundle["reconstruction"][0, 2:] == 1)
-        assert np.all(np.isnan(bundle["absolute_error"][0, :2]))
-        assert np.allclose(
-            bundle["absolute_error"][0, 2:], 1 - (index + 1) / 10
-        )
-
-        repeated = second_bundles[f"evaluation_bundle_{index}.npz"]
-        for field in expected_fields:
-            assert np.array_equal(bundle[field], repeated[field], equal_nan=True)
-
     assert set(first_pngs) == {
         "rmse_vs_sample_count.png",
         "evaluation_bundle_10_samples.png",
@@ -222,6 +186,7 @@ def test_unified_evaluation_writes_reproducible_comparison_metrics_and_figures(
     assert list(second_pngs) == list(first_pngs)
     for name, contents in first_pngs.items():
         assert contents == second_pngs[name]
+    assert not list(evaluation_dir.glob("*.npz"))
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert (
@@ -285,3 +250,16 @@ def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
     assert run_kwargs["sampler_config"] == {"alpha": 0.5}
     assert run_kwargs["global_seed"] == 17
     assert run_kwargs["evaluation_dir"] == tmp_path / "run" / "evaluation"
+
+
+def test_project_exposes_only_the_four_server_commands():
+    project_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    with project_path.open("rb") as project_file:
+        project = tomllib.load(project_file)
+
+    assert project["project"]["scripts"] == {
+        "train": "radio_map_reconstruction.train:train",
+        "train-coarse": "radio_map_reconstruction.train:train_coarse",
+        "tune-alpha": "radio_map_reconstruction.alpha_validation:tune_alpha",
+        "eval": "radio_map_reconstruction.eval:eval",
+    }

@@ -5,14 +5,11 @@ RECONSTRUCTOR_RUN_PATH = Path("run") / "reconstructor"
 COARSE_RECONSTRUCTOR_RUN_PATH = Path("run") / "coarse_reconstructor"
 SAMPLER_RUN_PATH = Path("run") / "sampler"
 EVALUATION_RUN_PATH = Path("run") / "evaluation"
-EVALUATION_BUNDLE_CASES = (
+EVALUATION_FIGURE_CASES = (
     (0, 10),
     (1, 50),
     (2, 100),
     (3, 200),
-)
-EVALUATION_BUNDLE_SAMPLE_COUNTS = tuple(
-    sample_count for _, sample_count in EVALUATION_BUNDLE_CASES
 )
 SAMPLING_DIAGNOSTIC_CASES = (
     (4, 10),

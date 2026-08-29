@@ -14,9 +14,7 @@ with CONFIG_PATH.open(encoding="utf-8") as file:
     CONFIG = safe_load(file)
 
 
-class RadioDataset(Dataset):
-
-    EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
+class _RadioMapDataset(Dataset):
 
     def __init__(
         self,
@@ -90,6 +88,22 @@ class RadioDataset(Dataset):
         start, end = boundaries[part]
         return [sample for _, samples in city_maps[start:end] for sample in samples]
 
+    def _read_image(self, path: str) -> Tensor:
+        image = decode_image(
+            path,
+            mode=ImageReadMode.GRAY,
+        )
+        return to_dtype(
+            image,
+            dtype=float32,
+            scale=True,
+        )
+
+
+class RadioDataset(_RadioMapDataset):
+
+    EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
+
     def __len__(self):
         if self.dataset_part != "train":
             return len(self.samples) * len(self.EVALUATION_SAMPLE_COUNTS)
@@ -155,19 +169,7 @@ class RadioDataset(Dataset):
 
         return gain_mask
 
-    def _read_image(self, path: str) -> Tensor:
-        image = decode_image(
-            path, 
-            mode=ImageReadMode.GRAY
-        )
-        return to_dtype(
-            image,
-            dtype=float32,
-            scale=True
-        )
-
-
-class CoarseRadioDataset(RadioDataset):
+class CoarseRadioDataset(_RadioMapDataset):
 
     def __len__(self) -> int:
         return len(self.samples)

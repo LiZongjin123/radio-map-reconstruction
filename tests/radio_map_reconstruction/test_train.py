@@ -4,20 +4,23 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pytest import approx
-from torch import Tensor, load, tensor
+from torch import Tensor, full, load, tensor, uint8, zeros
 from torch.nn import Module, Parameter
 from torch.optim.lr_scheduler import ExponentialLR
 from torch.optim import SGD
 from torch.utils.data import DataLoader
+from torchvision.io import write_png
 
 from radio_map_reconstruction.loss import RadioMapLoss
 from radio_map_reconstruction.train import (
     CONFIG,
+    ValidationRmseMode,
     eval_one_epoch,
     run_training,
     train_one_epoch,
 )
 import radio_map_reconstruction.train as train_module
+import radio_map_reconstruction.data as data_module
 
 EVALUATION_SAMPLE_COUNTS = (10, 20, 30, 50, 75, 100, 125, 150, 175, 200)
 ROOT = Path(__file__).resolve().parents[2]
@@ -255,7 +258,7 @@ def test_coarse_training_runs_end_to_end_and_selects_best_validation_rmse(
         scheduler=ExponentialLR(optimizer, gamma=1.0),
         epoch_num=2,
         run_dir=run_dir,
-        val_sample_count_channel=None,
+        validation_rmse_mode=ValidationRmseMode.PER_SAMPLE,
     )
 
     with (run_dir / "history.csv").open(newline="", encoding="utf-8") as file:
@@ -356,6 +359,9 @@ def test_coarse_training_uses_nested_config_dataset_and_role_directory(
     monkeypatch, tmp_path
 ):
     config = {
+        "dataset_path": "dataset",
+        "partition": "DPM",
+        "seed": 17,
         "device": "cpu",
         "coarse_reconstructor": {
             "model": {
@@ -377,8 +383,8 @@ def test_coarse_training_uses_nested_config_dataset_and_role_directory(
             super().__init__()
             self.weight = Parameter(tensor(0.0))
 
-    def make_dataset(split):
-        captured["datasets"].append(split)
+    def make_dataset(split, **kwargs):
+        captured["datasets"].append((split, kwargs))
         return split
 
     def make_model(**kwargs):
@@ -411,7 +417,16 @@ def test_coarse_training_uses_nested_config_dataset_and_role_directory(
 
     train_module.train_coarse()
 
-    assert captured["datasets"] == ["train", "val"]
+    assert captured["datasets"] == [
+        (
+            "train",
+            {"dataset_path": "dataset", "partition": "DPM", "seed": 17},
+        ),
+        (
+            "val",
+            {"dataset_path": "dataset", "partition": "DPM", "seed": 17},
+        ),
+    ]
     assert captured["model_config"] == config["coarse_reconstructor"]["model"]
     assert captured["loaders"] == [
         {
@@ -433,7 +448,95 @@ def test_coarse_training_uses_nested_config_dataset_and_role_directory(
     assert captured["run_training"]["run_dir"] == (
         tmp_path / "run" / "coarse_reconstructor"
     )
-    assert captured["run_training"]["val_sample_count_channel"] is None
+    assert captured["run_training"]["validation_rmse_mode"] is (
+        ValidationRmseMode.PER_SAMPLE
+    )
     assert captured["run_training"]["optimizer"].defaults["lr"] == approx(0.02)
     assert captured["run_training"]["scheduler"].T_max == 4
     assert captured["run_training"]["scheduler"].eta_min == approx(0.002)
+
+
+def test_coarse_training_command_runs_tiny_image_dataset_end_to_end(
+    monkeypatch, tmp_path
+):
+    gain_dir = tmp_path / "dataset" / "gain" / "DPM"
+    tx_dir = tmp_path / "dataset" / "png" / "antennas"
+    building_dir = tmp_path / "dataset" / "png" / "buildings_complete"
+    gain_dir.mkdir(parents=True)
+    tx_dir.mkdir(parents=True)
+    building_dir.mkdir(parents=True)
+    for city_map_id in range(10):
+        gain = full((1, 16, 16), 128, dtype=uint8)
+        tx = zeros((1, 16, 16), dtype=uint8)
+        building = zeros((1, 16, 16), dtype=uint8)
+        tx[0, 0, 1] = 255
+        building[0, 0, 0] = 255
+        write_png(building, str(building_dir / f"{city_map_id}.png"))
+        write_png(gain, str(gain_dir / f"{city_map_id}_0.png"))
+        write_png(tx, str(tx_dir / f"{city_map_id}_0.png"))
+
+    config = {
+        "dataset_path": str(tmp_path / "dataset"),
+        "partition": "DPM",
+        "seed": 17,
+        "device": "cpu",
+        "coarse_reconstructor": {
+            "model": {
+                "in_channels": 2,
+                "out_channels": 1,
+                "base_channels": 1,
+            },
+            "training": {"epochs": 1},
+            "data_loader": {"num_workers": 0, "batch_size": 2},
+            "optimizer": {"learning_rate": 0.01},
+            "scheduler": {"t_max": 1, "eta_min": 0.001},
+        },
+        "swanlab": {"project": "project", "workspace": "workspace"},
+    }
+    seen_channels = []
+
+    class TinyCoarseModel(Module):
+        def __init__(self):
+            super().__init__()
+            self.prediction = Parameter(tensor(0.0))
+
+        def forward(self, inputs: Tensor) -> Tensor:
+            seen_channels.append(inputs.shape[1])
+            return self.prediction.expand(
+                inputs.shape[0], 1, inputs.shape[-2], inputs.shape[-1]
+            )
+
+    run_root = tmp_path / "artifacts"
+    main_artifact = run_root / "run" / "reconstructor" / "best.pt"
+    main_artifact.parent.mkdir(parents=True)
+    main_artifact.write_text("main", encoding="utf-8")
+    monkeypatch.setattr(train_module, "CONFIG", config)
+    monkeypatch.setattr(train_module, "ROOT", run_root)
+    monkeypatch.setattr(train_module, "ResUnet", lambda **kwargs: TinyCoarseModel())
+    monkeypatch.setattr(
+        train_module,
+        "swanlab",
+        SimpleNamespace(
+            init=lambda **kwargs: None,
+            log=lambda metrics: None,
+            finish=lambda: None,
+        ),
+    )
+    monkeypatch.setattr(
+        data_module,
+        "CONFIG",
+        {
+            "dataset_path": str(tmp_path / "wrong-dataset"),
+            "partition": "wrong-partition",
+            "seed": 999,
+        },
+    )
+
+    train_module.train_coarse()
+
+    coarse_run = run_root / "run" / "coarse_reconstructor"
+    assert seen_channels and set(seen_channels) == {2}
+    assert (coarse_run / "history.csv").is_file()
+    assert (coarse_run / "latest.pt").is_file()
+    assert (coarse_run / "best.pt").is_file()
+    assert main_artifact.read_text(encoding="utf-8") == "main"

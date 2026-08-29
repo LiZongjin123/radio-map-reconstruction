@@ -1,6 +1,7 @@
 import csv
 import swanlab
 from collections.abc import Callable
+from enum import Enum, auto
 from pathlib import Path
 from torch import Tensor, inference_mode, save
 from torch.optim.lr_scheduler import CosineAnnealingLR, LRScheduler
@@ -22,6 +23,13 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = join(ROOT, "config.yml")
 with open(CONFIG_PATH, encoding="utf-8") as file:
     CONFIG = safe_load(file)
+
+SAMPLING_MASK_CHANNEL = 3
+
+
+class ValidationRmseMode(Enum):
+    BY_SAMPLE_COUNT = auto()
+    PER_SAMPLE = auto()
 
 def train_one_epoch(
         model: Module,
@@ -58,7 +66,7 @@ def eval_one_epoch(
         criterion: Module,
         epoch: int,
         epoch_num: int,
-        sample_count_channel: int | None = 3,
+        validation_rmse_mode: ValidationRmseMode = ValidationRmseMode.BY_SAMPLE_COUNT,
 ) -> tuple[float, float, dict[int, float]]:
     model.eval()
     progress = tqdm(dataloader, desc=f"eval {epoch + 1}/{epoch_num}", unit="batch", leave=True)
@@ -82,8 +90,8 @@ def eval_one_epoch(
             total_rmse += rmse_per_sample.sum().item()
             total_samples += batch_size
 
-            if sample_count_channel is not None:
-                sample_counts = inputs[:, sample_count_channel].flatten(
+            if validation_rmse_mode is ValidationRmseMode.BY_SAMPLE_COUNT:
+                sample_counts = inputs[:, SAMPLING_MASK_CHANNEL].flatten(
                     start_dim=1
                 ).sum(dim=1)
                 for sample_count, rmse in zip(
@@ -124,7 +132,7 @@ def run_training(
         epoch_num: int,
         run_dir: str | Path,
         metric_logger: Callable[[dict[str, int | float]], None] | None = None,
-        val_sample_count_channel: int | None = 3,
+        validation_rmse_mode: ValidationRmseMode = ValidationRmseMode.BY_SAMPLE_COUNT,
 ) -> None:
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -153,9 +161,9 @@ def run_training(
                 criterion,
                 epoch,
                 epoch_num,
-                sample_count_channel=val_sample_count_channel,
+                validation_rmse_mode=validation_rmse_mode,
             )
-            if val_sample_count_channel is None:
+            if validation_rmse_mode is ValidationRmseMode.PER_SAMPLE:
                 val_mean_per_sample_normalized_rmse = val_rmse
             else:
                 val_mean_per_sample_normalized_rmse = sum(
@@ -193,47 +201,50 @@ def run_training(
                 })
             scheduler.step()
 
-def train() -> None:
-    reconstructor_config = CONFIG["reconstructor"]
-    train_data = RadioDataset("train")
-    val_data = RadioDataset("val")
-
+def _train_model_role(
+    *,
+    role_config: dict,
+    train_data: RadioDataset | CoarseRadioDataset,
+    val_data: RadioDataset | CoarseRadioDataset,
+    run_path: Path,
+    validation_rmse_mode: ValidationRmseMode,
+) -> None:
     train_loader = DataLoader(
         dataset=train_data,
-        num_workers=reconstructor_config["data_loader"]["num_workers"],
-        batch_size=reconstructor_config["data_loader"]["batch_size"],
+        num_workers=role_config["data_loader"]["num_workers"],
+        batch_size=role_config["data_loader"]["batch_size"],
         shuffle=True,
-        pin_memory=True
+        pin_memory=True,
     )
     val_loader = DataLoader(
         dataset=val_data,
-        num_workers=reconstructor_config["data_loader"]["num_workers"],
-        batch_size=reconstructor_config["data_loader"]["batch_size"],
+        num_workers=role_config["data_loader"]["num_workers"],
+        batch_size=role_config["data_loader"]["batch_size"],
         shuffle=True,
-        pin_memory=True
+        pin_memory=True,
     )
 
     swanlab.init(
         project=CONFIG["swanlab"]["project"],
         workspace=CONFIG["swanlab"]["workspace"],
         config={
-            "learning_rate": reconstructor_config["optimizer"]["learning_rate"],
-            "epochs": reconstructor_config["training"]["epochs"],
-            "t_max": reconstructor_config["scheduler"]["t_max"],
-            "eta_min": reconstructor_config["scheduler"]["eta_min"],
-        }
+            "learning_rate": role_config["optimizer"]["learning_rate"],
+            "epochs": role_config["training"]["epochs"],
+            "t_max": role_config["scheduler"]["t_max"],
+            "eta_min": role_config["scheduler"]["eta_min"],
+        },
     )
 
-    res_unet = ResUnet(**reconstructor_config["model"]).to(CONFIG["device"])
+    res_unet = ResUnet(**role_config["model"]).to(CONFIG["device"])
     criterion = RadioMapLoss()
     optimizer = Adam(
         res_unet.parameters(),
-        lr=reconstructor_config["optimizer"]["learning_rate"],
+        lr=role_config["optimizer"]["learning_rate"],
     )
     scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=reconstructor_config["scheduler"]["t_max"],
-        eta_min=reconstructor_config["scheduler"]["eta_min"],
+        T_max=role_config["scheduler"]["t_max"],
+        eta_min=role_config["scheduler"]["eta_min"],
     )
 
     try:
@@ -244,72 +255,41 @@ def train() -> None:
             criterion=criterion,
             optimizer=optimizer,
             scheduler=scheduler,
-            epoch_num=reconstructor_config["training"]["epochs"],
-            run_dir=ROOT / RECONSTRUCTOR_RUN_PATH,
+            epoch_num=role_config["training"]["epochs"],
+            run_dir=ROOT / run_path,
             metric_logger=swanlab.log,
+            validation_rmse_mode=validation_rmse_mode,
         )
     finally:
         swanlab.finish()
+
+
+def train() -> None:
+    _train_model_role(
+        role_config=CONFIG["reconstructor"],
+        train_data=RadioDataset("train"),
+        val_data=RadioDataset("val"),
+        run_path=RECONSTRUCTOR_RUN_PATH,
+        validation_rmse_mode=ValidationRmseMode.BY_SAMPLE_COUNT,
+    )
 
 
 def train_coarse() -> None:
     coarse_config = CONFIG["coarse_reconstructor"]
-    train_data = CoarseRadioDataset("train")
-    val_data = CoarseRadioDataset("val")
-
-    train_loader = DataLoader(
-        dataset=train_data,
-        num_workers=coarse_config["data_loader"]["num_workers"],
-        batch_size=coarse_config["data_loader"]["batch_size"],
-        shuffle=True,
-        pin_memory=True,
+    dataset_config = {
+        "dataset_path": CONFIG["dataset_path"],
+        "partition": CONFIG["partition"],
+        "seed": CONFIG["seed"],
+    }
+    train_data = CoarseRadioDataset("train", **dataset_config)
+    val_data = CoarseRadioDataset("val", **dataset_config)
+    _train_model_role(
+        role_config=coarse_config,
+        train_data=train_data,
+        val_data=val_data,
+        run_path=COARSE_RECONSTRUCTOR_RUN_PATH,
+        validation_rmse_mode=ValidationRmseMode.PER_SAMPLE,
     )
-    val_loader = DataLoader(
-        dataset=val_data,
-        num_workers=coarse_config["data_loader"]["num_workers"],
-        batch_size=coarse_config["data_loader"]["batch_size"],
-        shuffle=True,
-        pin_memory=True,
-    )
-
-    swanlab.init(
-        project=CONFIG["swanlab"]["project"],
-        workspace=CONFIG["swanlab"]["workspace"],
-        config={
-            "learning_rate": coarse_config["optimizer"]["learning_rate"],
-            "epochs": coarse_config["training"]["epochs"],
-            "t_max": coarse_config["scheduler"]["t_max"],
-            "eta_min": coarse_config["scheduler"]["eta_min"],
-        },
-    )
-
-    res_unet = ResUnet(**coarse_config["model"]).to(CONFIG["device"])
-    criterion = RadioMapLoss()
-    optimizer = Adam(
-        res_unet.parameters(),
-        lr=coarse_config["optimizer"]["learning_rate"],
-    )
-    scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=coarse_config["scheduler"]["t_max"],
-        eta_min=coarse_config["scheduler"]["eta_min"],
-    )
-
-    try:
-        run_training(
-            model=res_unet,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            epoch_num=coarse_config["training"]["epochs"],
-            run_dir=ROOT / COARSE_RECONSTRUCTOR_RUN_PATH,
-            metric_logger=swanlab.log,
-            val_sample_count_channel=None,
-        )
-    finally:
-        swanlab.finish()
 
 def save_checkpoint(
         path: str | Path,

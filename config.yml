@@ -32,6 +32,11 @@ coarse_reconstructor:
   scheduler:
     t_max: 50
     eta_min: 0.000001
+sampler:
+  alpha: 0.5
+  weight_epsilon: 0.000001
+  max_iter: 300
+  tolerance: 0.0001
 swanlab:
   project: radio-map-reconstruction
   workspace: LiZongjin

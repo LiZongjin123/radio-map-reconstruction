@@ -1,5 +1,5 @@
 import numpy as np
-from matplotlib.colors import to_rgba
+from matplotlib.colors import ListedColormap, to_rgba
 from matplotlib.figure import Figure
 
 from radio_map_reconstruction.plot import (
@@ -98,14 +98,52 @@ def test_sampling_diagnostic_figure_shows_decision_chain_and_actual_mask(
     save_sampling_diagnostic_figure(diagnostic, output_path=output_path)
 
     assert output_path.is_file()
-    assert [axes.get_title() for axes in captured_figure.axes] == [
+    panel_axes = captured_figure.axes[:5]
+    colorbar_axes = captured_figure.axes[5:]
+    assert [axes.get_title() for axes in panel_axes] == [
         "Coarse Reconstruction",
         "Normalized Gradient",
         "Normalized Distance",
         "Sampling Score",
         "Clustering and Sampling",
     ]
-    for axes in captured_figure.axes:
+    assert [axes.get_subplotspec().rowspan.start for axes in panel_axes] == [
+        0,
+        0,
+        0,
+        1,
+        1,
+    ]
+    assert [axes.get_subplotspec().colspan.start for axes in panel_axes] == [
+        0,
+        2,
+        4,
+        1,
+        3,
+    ]
+    top_left = panel_axes[0].get_position()
+    top_right = panel_axes[2].get_position()
+    bottom_left = panel_axes[3].get_position()
+    bottom_right = panel_axes[4].get_position()
+    assert np.isclose(
+        bottom_left.x0 - top_left.x0,
+        top_right.x1 - bottom_right.x1,
+    )
+    assert len(colorbar_axes) == 1
+    assert colorbar_axes[0].get_ylabel() == "Normalized Value"
+
+    continuous_images = [axes.images[0] for axes in panel_axes[:4]]
+    assert all(image.norm is continuous_images[0].norm for image in continuous_images)
+    assert (continuous_images[0].norm.vmin, continuous_images[0].norm.vmax) == (
+        0,
+        1,
+    )
+    assert isinstance(panel_axes[4].images[0].cmap, ListedColormap)
+    assert [
+        text.get_text() for text in panel_axes[4].get_legend().get_texts()
+    ] == ["Valid Sampling Points", "Transmitter"]
+
+    for axes in panel_axes:
         assert np.array_equal(
             np.ma.getmaskarray(axes.images[0].get_array()), invalid_area
         )

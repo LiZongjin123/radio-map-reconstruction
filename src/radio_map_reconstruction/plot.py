@@ -181,12 +181,21 @@ def save_sampling_diagnostic_figure(
     if np.any(sampling_mask & ~valid_receiving_area):
         raise ValueError("Valid Sampling Points cannot occupy the invalid area")
 
-    figure, axes = plt.subplots(
-        1,
-        5,
-        figsize=(18, 4.2),
-        constrained_layout=True,
+    figure = plt.figure(figsize=(12, 7), constrained_layout=True)
+    grid = figure.add_gridspec(
+        2,
+        7,
+        width_ratios=(1, 1, 1, 1, 1, 1, 0.08),
     )
+    axes = (
+        figure.add_subplot(grid[0, 0:2]),
+        figure.add_subplot(grid[0, 2:4]),
+        figure.add_subplot(grid[0, 4:6]),
+        figure.add_subplot(grid[1, 1:3]),
+        figure.add_subplot(grid[1, 3:5]),
+    )
+    colorbar_axes = figure.add_subplot(grid[:, 6])
+    continuous_normalization = Normalize(vmin=0, vmax=1, clip=True)
     continuous_colormap = matplotlib.colormaps["viridis"].with_extremes(
         bad="lightgray"
     )
@@ -208,19 +217,27 @@ def save_sampling_diagnostic_figure(
         ("Sampling Score", diagnostic.score, continuous_colormap),
         ("Clustering and Sampling", diagnostic.cluster_labels, cluster_colormap),
     )
+    continuous_image = None
     for axes_item, (title, values, colormap) in zip(axes, panels, strict=True):
-        axes_item.imshow(
+        image = axes_item.imshow(
             np.ma.masked_where(~valid_receiving_area, values),
             cmap=colormap,
-            vmin=0,
-            vmax=(
-                diagnostic.sample_count - 1
+            **(
+                {
+                    "vmin": 0,
+                    "vmax": diagnostic.sample_count - 1,
+                }
                 if title == "Clustering and Sampling"
-                else 1
+                else {"norm": continuous_normalization}
             ),
         )
+        if continuous_image is None:
+            continuous_image = image
         axes_item.set_title(title)
         axes_item.set_axis_off()
+
+    colorbar = figure.colorbar(continuous_image, cax=colorbar_axes)
+    colorbar.set_label("Normalized Value")
 
     cluster_axes = axes[-1]
     cluster_axes.scatter(

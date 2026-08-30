@@ -19,6 +19,7 @@ from torch import (
 )
 from torch.nn import Module
 from torch.utils.data import Dataset
+from tqdm import tqdm
 from yaml import safe_load
 
 from radio_map_reconstruction.artifacts import (
@@ -55,6 +56,12 @@ class AlphaValidationProgress:
     completed_pairs: int
     total_pairs: int
     eta_seconds: float
+
+
+@dataclass(frozen=True)
+class AlphaValidationExampleProgress:
+    running_best_alpha: float
+    running_best_rmse: float
 
 
 def report_alpha_validation_progress(progress: AlphaValidationProgress) -> None:
@@ -110,6 +117,10 @@ def run_alpha_validation(
     progress_reporter: Callable[[AlphaValidationProgress], None] | None = (
         report_alpha_validation_progress
     ),
+    example_progress_reporter: Callable[
+        [AlphaValidationExampleProgress], None
+    ]
+    | None = None,
 ) -> dict[float, float]:
     """Evaluate configured alpha candidates on selected validation Examples."""
     candidates = _validated_candidates(sampler_config)
@@ -221,6 +232,23 @@ def run_alpha_validation(
                                 eta_seconds=eta_seconds,
                             )
                         )
+                if example_progress_reporter is not None:
+                    running_metrics = {
+                        candidate: rmse_sums[candidate]
+                        / case_counts[candidate]
+                        for candidate in candidates
+                    }
+                    running_best_alpha = min(
+                        candidates, key=running_metrics.__getitem__
+                    )
+                    example_progress_reporter(
+                        AlphaValidationExampleProgress(
+                            running_best_alpha=running_best_alpha,
+                            running_best_rmse=running_metrics[
+                                running_best_alpha
+                            ],
+                        )
+                    )
     finally:
         coarse_model.train(coarse_was_training)
         reconstructor.train(reconstructor_was_training)
@@ -284,27 +312,50 @@ def tune_alpha(argv: Sequence[str] | None = None) -> None:
         "seed": CONFIG["seed"],
     }
     validation_dataset = CoarseRadioDataset("val", **dataset_config)
-    select_example_indices(
+    selected_example_indices = select_example_indices(
         available_examples=len(validation_dataset),
         requested_examples=arguments.examples,
         global_seed=CONFIG["seed"],
     )
-    metrics = run_alpha_validation(
-        coarse_model=_load_role_model(
-            CONFIG["coarse_reconstructor"],
-            ROOT / COARSE_RECONSTRUCTOR_RUN_PATH / "best.pt",
-        ),
-        reconstructor=_load_role_model(
-            CONFIG["reconstructor"],
-            ROOT / RECONSTRUCTOR_RUN_PATH / "best.pt",
-        ),
-        validation_dataset=validation_dataset,
-        sampler_config=CONFIG["sampler"],
-        global_seed=CONFIG["seed"],
-        sample_counts=RadioDataset.EVALUATION_SAMPLE_COUNTS,
-        output_dir=ROOT / SAMPLER_RUN_PATH,
-        device=CONFIG["device"],
-        requested_examples=arguments.examples,
+    progress = tqdm(
+        desc="tune-alpha 1/1",
+        unit="Example",
+        total=len(selected_example_indices),
+        leave=True,
     )
+
+    def report_example_progress(
+        example_progress: AlphaValidationExampleProgress,
+    ) -> None:
+        progress.set_postfix(
+            running_best_alpha=f"{example_progress.running_best_alpha:g}",
+            running_best_rmse=(
+                f"{example_progress.running_best_rmse:.6f}"
+            ),
+        )
+        progress.update(1)
+
+    try:
+        metrics = run_alpha_validation(
+            coarse_model=_load_role_model(
+                CONFIG["coarse_reconstructor"],
+                ROOT / COARSE_RECONSTRUCTOR_RUN_PATH / "best.pt",
+            ),
+            reconstructor=_load_role_model(
+                CONFIG["reconstructor"],
+                ROOT / RECONSTRUCTOR_RUN_PATH / "best.pt",
+            ),
+            validation_dataset=validation_dataset,
+            sampler_config=CONFIG["sampler"],
+            global_seed=CONFIG["seed"],
+            sample_counts=RadioDataset.EVALUATION_SAMPLE_COUNTS,
+            output_dir=ROOT / SAMPLER_RUN_PATH,
+            device=CONFIG["device"],
+            requested_examples=arguments.examples,
+            progress_reporter=None,
+            example_progress_reporter=report_example_progress,
+        )
+    finally:
+        progress.close()
     for alpha, rmse in metrics.items():
         print(f"alpha={alpha:g}: validation rmse={rmse:.6f}")

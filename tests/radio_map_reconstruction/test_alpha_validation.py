@@ -1,6 +1,7 @@
 import csv
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 import tomllib
 
 import matplotlib
@@ -255,6 +256,92 @@ def test_alpha_tuning_command_routes_optional_example_limit_without_changing_out
     assert captured["requested_examples"] == expected_limit
     assert captured["global_seed"] == 17
     assert captured["output_dir"] == tmp_path / "run" / "sampler"
+
+
+def test_alpha_tuning_command_reports_example_progress_and_then_final_summary(
+    monkeypatch,
+    capsys,
+    tmp_path,
+):
+    progress_state = {"updates": [], "postfixes": []}
+    config = {
+        "dataset_path": "dataset",
+        "partition": "DPM",
+        "seed": 17,
+        "device": "cpu",
+        "reconstructor": {"model": {}},
+        "coarse_reconstructor": {"model": {}},
+        "sampler": {"alpha_candidates": [0.25, 0.75]},
+    }
+    monkeypatch.setattr(alpha_validation_module, "CONFIG", config)
+    monkeypatch.setattr(alpha_validation_module, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        alpha_validation_module,
+        "CoarseRadioDataset",
+        lambda *args, **kwargs: list(range(5)),
+    )
+    monkeypatch.setattr(
+        alpha_validation_module,
+        "_load_role_model",
+        lambda *args, **kwargs: object(),
+    )
+
+    class RecordingProgress:
+        def __init__(self, **kwargs):
+            progress_state["config"] = kwargs
+
+        def update(self, amount):
+            progress_state["updates"].append(amount)
+
+        def set_postfix(self, **kwargs):
+            progress_state["postfixes"].append(kwargs)
+
+        def close(self):
+            print("progress complete")
+
+    monkeypatch.setattr(alpha_validation_module, "tqdm", RecordingProgress)
+
+    def report_examples(**kwargs):
+        assert kwargs["progress_reporter"] is None
+        reporter = kwargs["example_progress_reporter"]
+        reporter(
+            SimpleNamespace(
+                running_best_alpha=0.25,
+                running_best_rmse=0.5,
+            )
+        )
+        reporter(
+            SimpleNamespace(
+                running_best_alpha=0.75,
+                running_best_rmse=0.4,
+            )
+        )
+        return {0.25: 0.45, 0.75: 0.4}
+
+    monkeypatch.setattr(
+        alpha_validation_module,
+        "run_alpha_validation",
+        report_examples,
+    )
+
+    alpha_validation_module.tune_alpha(["--examples", "2"])
+
+    assert progress_state["config"] == {
+        "desc": "tune-alpha 1/1",
+        "unit": "Example",
+        "total": 2,
+        "leave": True,
+    }
+    assert progress_state["updates"] == [1, 1]
+    assert progress_state["postfixes"] == [
+        {"running_best_alpha": "0.25", "running_best_rmse": "0.500000"},
+        {"running_best_alpha": "0.75", "running_best_rmse": "0.400000"},
+    ]
+    output = capsys.readouterr().out
+    assert "alpha validation:" not in output
+    assert output.index("progress complete") < output.index(
+        "alpha=0.25: validation rmse=0.450000"
+    )
 
 
 def test_selected_examples_cover_all_alpha_candidates_and_sample_counts_with_pair_progress(

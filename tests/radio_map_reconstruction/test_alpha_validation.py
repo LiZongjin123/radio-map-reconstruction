@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 import tomllib
 
+import pytest
 from pytest import approx
 from torch import (
     Tensor,
@@ -19,7 +20,10 @@ from torch.nn import Module
 from torch.utils.data import Dataset
 from torchvision.io import write_png
 
-from radio_map_reconstruction.alpha_validation import run_alpha_validation
+from radio_map_reconstruction.alpha_validation import (
+    run_alpha_validation,
+    select_example_indices,
+)
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.model import ResUnet
 import radio_map_reconstruction.alpha_validation as alpha_validation_module
@@ -139,6 +143,226 @@ def test_project_exposes_dedicated_alpha_tuning_command():
     )
 
 
+def test_bounded_example_selection_is_deterministic_prefix_stable_and_permuted():
+    smaller = select_example_indices(
+        available_examples=10,
+        requested_examples=3,
+        global_seed=17,
+    )
+    repeated = select_example_indices(
+        available_examples=10,
+        requested_examples=3,
+        global_seed=17,
+    )
+    larger = select_example_indices(
+        available_examples=10,
+        requested_examples=7,
+        global_seed=17,
+    )
+
+    assert smaller == repeated
+    assert smaller == larger[:3]
+    assert larger != tuple(range(7))
+
+
+@pytest.mark.parametrize("requested_examples", [0, -1])
+def test_bounded_example_selection_rejects_non_positive_counts(requested_examples):
+    with pytest.raises(ValueError, match="positive integer"):
+        select_example_indices(
+            available_examples=5,
+            requested_examples=requested_examples,
+            global_seed=17,
+        )
+
+
+def test_bounded_example_selection_reports_requested_and_available_counts():
+    with pytest.raises(ValueError, match="requested 6.*available 5"):
+        select_example_indices(
+            available_examples=5,
+            requested_examples=6,
+            global_seed=17,
+        )
+
+
+@pytest.mark.parametrize("argument", ["0", "-2", "not-a-number"])
+def test_alpha_tuning_command_rejects_invalid_example_arguments(argument):
+    with pytest.raises(SystemExit):
+        alpha_validation_module.tune_alpha(["--examples", argument])
+
+
+def test_alpha_tuning_command_rejects_over_capacity_before_loading_models(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        alpha_validation_module,
+        "CoarseRadioDataset",
+        lambda *args, **kwargs: list(range(5)),
+    )
+    monkeypatch.setattr(
+        alpha_validation_module,
+        "_load_role_model",
+        lambda *args, **kwargs: pytest.fail("models must not load"),
+    )
+
+    with pytest.raises(ValueError, match="requested 6.*available 5"):
+        alpha_validation_module.tune_alpha(["--examples", "6"])
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_limit"),
+    [([], None), (["--examples", "3"], 3)],
+)
+def test_alpha_tuning_command_routes_optional_example_limit_without_changing_outputs(
+    monkeypatch,
+    tmp_path,
+    arguments,
+    expected_limit,
+):
+    captured = {}
+    dataset = list(range(5))
+    config = {
+        "dataset_path": "dataset",
+        "partition": "DPM",
+        "seed": 17,
+        "device": "cpu",
+        "reconstructor": {"model": {}},
+        "coarse_reconstructor": {"model": {}},
+        "sampler": {"alpha_candidates": [0.25]},
+    }
+    monkeypatch.setattr(alpha_validation_module, "CONFIG", config)
+    monkeypatch.setattr(alpha_validation_module, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        alpha_validation_module,
+        "CoarseRadioDataset",
+        lambda *args, **kwargs: dataset,
+    )
+    monkeypatch.setattr(
+        alpha_validation_module,
+        "_load_role_model",
+        lambda *args, **kwargs: object(),
+    )
+
+    def capture_run(**kwargs):
+        captured.update(kwargs)
+        return {0.25: 0.5}
+
+    monkeypatch.setattr(alpha_validation_module, "run_alpha_validation", capture_run)
+
+    alpha_validation_module.tune_alpha(arguments)
+
+    assert captured["validation_dataset"] is dataset
+    assert captured["requested_examples"] == expected_limit
+    assert captured["global_seed"] == 17
+    assert captured["output_dir"] == tmp_path / "run" / "sampler"
+
+
+def test_selected_examples_cover_all_alpha_candidates_and_sample_counts_with_pair_progress(
+    monkeypatch,
+    tmp_path,
+):
+    class FourExampleDataset(TinyValidationDataset):
+        def __len__(self) -> int:
+            return 4
+
+        def __getitem__(self, index):
+            assert 0 <= index < len(self)
+            return super().__getitem__(0)
+
+    sampler_calls = []
+
+    def record_sampling(
+        coarse_map,
+        tx_map,
+        building_map,
+        sample_count,
+        *,
+        alpha,
+        sample_id,
+        **kwargs,
+    ):
+        sampler_calls.append((sample_id, alpha, sample_count))
+        sampling_mask = zeros(coarse_map.shape)
+        sampling_mask.flatten()[1 : sample_count + 1] = 1
+        return sampling_mask, None
+
+    monkeypatch.setattr(
+        alpha_validation_module,
+        "gradient_distance_weighted_clustering_sample",
+        record_sampling,
+    )
+    progress_events = []
+    sampler_config = {
+        "alpha_candidates": [0.75, 0.25],
+        "weight_epsilon": 1e-6,
+        "max_iter": 30,
+        "tolerance": 1e-4,
+    }
+
+    run_alpha_validation(
+        coarse_model=TinyCoarseModel(),
+        reconstructor=ZeroReconstructor(),
+        validation_dataset=FourExampleDataset(),
+        sampler_config=sampler_config,
+        global_seed=17,
+        sample_counts=(1, 2),
+        output_dir=tmp_path,
+        device="cpu",
+        requested_examples=2,
+        progress_reporter=progress_events.append,
+    )
+
+    selected = select_example_indices(
+        available_examples=4,
+        requested_examples=2,
+        global_seed=17,
+    )
+    assert sampler_calls == [
+        (f"validation-{example_index}", alpha, sample_count)
+        for example_index in selected
+        for alpha in (0.25, 0.75)
+        for sample_count in (1, 2)
+    ]
+    assert [event.completed_pairs for event in progress_events] == [1, 2, 3, 4]
+    assert {event.total_pairs for event in progress_events} == {4}
+    assert [event.example_index for event in progress_events] == [
+        selected[0],
+        selected[0],
+        selected[1],
+        selected[1],
+    ]
+    assert [event.alpha for event in progress_events] == [0.25, 0.75, 0.25, 0.75]
+    assert all(event.eta_seconds >= 0 for event in progress_events)
+
+
+def test_tiny_alpha_validation_reports_plain_text_pair_progress(capsys, tmp_path):
+    run_alpha_validation(
+        coarse_model=TinyCoarseModel(),
+        reconstructor=ZeroReconstructor(),
+        validation_dataset=TinyValidationDataset(),
+        sampler_config={
+            "alpha_candidates": [0.0, 1.0],
+            "weight_epsilon": 1e-6,
+            "max_iter": 30,
+            "tolerance": 1e-4,
+        },
+        global_seed=42,
+        sample_counts=(1,),
+        output_dir=tmp_path,
+        device="cpu",
+    )
+
+    progress_lines = [
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("alpha validation:")
+    ]
+    assert len(progress_lines) == 2
+    assert "Example 1/1 (validation-0)" in progress_lines[0]
+    assert "alpha=0" in progress_lines[0]
+    assert "completed=1/2" in progress_lines[0]
+    assert "ETA=" in progress_lines[0]
+    assert "alpha=1" in progress_lines[1]
+    assert "completed=2/2" in progress_lines[1]
+
+
 def test_alpha_tuning_command_uses_validation_data_and_role_checkpoints(
     monkeypatch, tmp_path
 ):
@@ -189,7 +413,7 @@ def test_alpha_tuning_command_uses_validation_data_and_role_checkpoints(
         model = ResUnet(**config[role]["model"])
         save({"model_state_dict": model.state_dict()}, checkpoint_path)
 
-    alpha_validation_module.tune_alpha()
+    alpha_validation_module.tune_alpha([])
 
     assert (tmp_path / "run" / "sampler" / "alpha_validation_metrics.csv").is_file()
     assert (tmp_path / "run" / "sampler" / "rmse_vs_alpha.png").is_file()

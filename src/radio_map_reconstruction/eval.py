@@ -1,4 +1,6 @@
 import csv
+from argparse import ArgumentParser
+from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -40,13 +42,51 @@ from radio_map_reconstruction.sampling import (
     gradient_distance_weighted_clustering_sample,
 )
 from radio_map_reconstruction.train import CONFIG
-from radio_map_reconstruction.util import sample_identity
+from radio_map_reconstruction.util import (
+    positive_int_argument,
+    sample_identity,
+    select_example_indices,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
 class StrategyRmse(NamedTuple):
     random_rmse: float
     guided_rmse: float
+
+
+def _selected_test_example_indices(
+    test_dataset: Dataset,
+    *,
+    requested_examples: int | None,
+    global_seed: int,
+) -> tuple[int, ...]:
+    sample_counts = tuple(test_dataset.EVALUATION_SAMPLE_COUNTS)
+    sample_total = len(test_dataset)
+    if sample_total % len(sample_counts) != 0:
+        raise ValueError(
+            f"test dataset must hold {len(sample_counts)} cases per Example, "
+            f"one per Valid Sampling Point count; found {sample_total} cases"
+        )
+    available_examples = sample_total // len(sample_counts)
+    example_indices = select_example_indices(
+        available_examples=available_examples,
+        requested_examples=requested_examples,
+        global_seed=global_seed,
+        partition_name="test",
+    )
+    minimum_examples = 1 + max(
+        index
+        for index, _ in EVALUATION_FIGURE_CASES + SAMPLING_DIAGNOSTIC_CASES
+    )
+    if len(example_indices) < minimum_examples:
+        raise ValueError(
+            "evaluation requires at least "
+            f"{minimum_examples} Examples to render all fixed Evaluation "
+            "Bundle Figures and Sampling Diagnostics"
+        )
+    return example_indices
+
 
 def load_checkpoint(path: str | Path) -> Module:
     checkpoint = load(path, map_location=CONFIG["device"])
@@ -73,7 +113,7 @@ def _guided_sampling_inputs(
     sampler_config: dict,
     global_seed: int,
     sample_id: str,
-    sample_index: int,
+    example_position: int,
 ) -> tuple[Tensor, list[SamplingDiagnosticData]]:
     tx_map = inputs[0, 1:2]
     building_map = inputs[0, 2:3]
@@ -103,7 +143,7 @@ def _guided_sampling_inputs(
                 )
             )
         )
-        if (sample_index, sample_count) in SAMPLING_DIAGNOSTIC_CASES:
+        if (example_position, sample_count) in SAMPLING_DIAGNOSTIC_CASES:
             diagnostic_figures.append(
                 SamplingDiagnosticData(
                     sample_count=sample_count,
@@ -132,13 +172,12 @@ def _accumulate_rmse(
     outputs: Tensor,
     targets: dict[str, Tensor],
     rmse_sums: dict[int, float],
+    sample_counts: tuple[int, ...],
 ) -> None:
     rmse_per_sample = normalized_mse_per_sample(
         outputs.clamp(0, 1), targets
     ).sqrt()
-    for count_index, sample_count in enumerate(
-        RadioDataset.EVALUATION_SAMPLE_COUNTS
-    ):
+    for count_index, sample_count in enumerate(sample_counts):
         rmse_sums[sample_count] += rmse_per_sample[count_index].item()
 
 
@@ -171,7 +210,7 @@ def _evaluation_bundle(
 
 def _random_evaluation_bundles(
     *,
-    sample_index: int,
+    example_position: int,
     inputs: Tensor,
     outputs: Tensor,
     targets: dict[str, Tensor],
@@ -179,7 +218,7 @@ def _random_evaluation_bundles(
 ) -> list[EvaluationBundle]:
     bundles = []
     for bundle_sample_index, bundle_count in EVALUATION_FIGURE_CASES:
-        if sample_index != bundle_sample_index:
+        if example_position != bundle_sample_index:
             continue
         count_index = sample_counts.index(bundle_count)
         bundles.append(
@@ -267,26 +306,16 @@ def run_evaluation(
     sampler_config: dict,
     global_seed: int,
     evaluation_dir: str | Path,
+    requested_examples: int | None = None,
 ) -> dict[int, StrategyRmse]:
     """Compare fixed-seed random and configured-alpha guided sampling on one frozen reconstructor."""
-    sample_counts = RadioDataset.EVALUATION_SAMPLE_COUNTS
-    sample_total = len(test_dataset)
-    if sample_total % len(sample_counts) != 0:
-        raise ValueError(
-            f"test dataset must hold {len(sample_counts)} cases per sample, "
-            f"one per Valid Sampling Point count; found {sample_total} cases"
-        )
-    sample_num = sample_total // len(sample_counts)
-    fixed_case_indices = tuple(
-        index
-        for index, _ in EVALUATION_FIGURE_CASES + SAMPLING_DIAGNOSTIC_CASES
+    sample_counts = tuple(test_dataset.EVALUATION_SAMPLE_COUNTS)
+    example_indices = _selected_test_example_indices(
+        test_dataset,
+        requested_examples=requested_examples,
+        global_seed=global_seed,
     )
-    if sample_num < max(fixed_case_indices) + 1:
-        raise ValueError(
-            "test dataset must contain at least "
-            f"{max(fixed_case_indices) + 1} samples to render the fixed "
-            "Evaluation Bundle Figure and Sampling Diagnostic cases"
-        )
+    example_count = len(example_indices)
 
     model_was_training = model.training
     coarse_model_was_training = coarse_model.training
@@ -312,12 +341,13 @@ def run_evaluation(
     try:
         with inference_mode():
             progress = tqdm(
-                range(sample_num),
+                example_indices,
                 desc="eval 1/1",
-                unit="sample",
+                unit="Example",
+                total=example_count,
                 leave=True,
             )
-            for sample_index in progress:
+            for sample_position, sample_index in enumerate(progress):
                 cases = [
                     test_dataset[
                         sample_index * len(sample_counts) + count_index
@@ -335,10 +365,15 @@ def run_evaluation(
                 }
 
                 random_outputs = model(inputs)
-                _accumulate_rmse(random_outputs, targets, random_rmse_sums)
+                _accumulate_rmse(
+                    random_outputs,
+                    targets,
+                    random_rmse_sums,
+                    sample_counts,
+                )
                 bundles.extend(
                     _random_evaluation_bundles(
-                        sample_index=sample_index,
+                        example_position=sample_position,
                         inputs=inputs,
                         outputs=random_outputs,
                         targets=targets,
@@ -358,13 +393,18 @@ def run_evaluation(
                         sample_index,
                         fallback_prefix="test",
                     ),
-                    sample_index=sample_index,
+                    example_position=sample_position,
                 )
                 sampling_diagnostics.extend(case_diagnostics)
                 guided_outputs = model(guided_inputs)
-                _accumulate_rmse(guided_outputs, targets, guided_rmse_sums)
+                _accumulate_rmse(
+                    guided_outputs,
+                    targets,
+                    guided_rmse_sums,
+                    sample_counts,
+                )
 
-                evaluated_cases = (sample_index + 1) * 2 * len(sample_counts)
+                evaluated_cases = (sample_position + 1) * 2 * len(sample_counts)
                 running_rmse = (
                     sum(random_rmse_sums.values())
                     + sum(guided_rmse_sums.values())
@@ -382,8 +422,8 @@ def run_evaluation(
 
     rmse_by_sample_count = {
         sample_count: StrategyRmse(
-            random_rmse=random_rmse_sums[sample_count] / sample_num,
-            guided_rmse=guided_rmse_sums[sample_count] / sample_num,
+            random_rmse=random_rmse_sums[sample_count] / example_count,
+            guided_rmse=guided_rmse_sums[sample_count] / example_count,
         )
         for sample_count in sample_counts
     }
@@ -400,8 +440,20 @@ def run_evaluation(
     return rmse_by_sample_count
 
 
-def eval() -> None:
+def eval(argv: Sequence[str] | None = None) -> None:
+    parser = ArgumentParser(description="Evaluate reconstruction strategies.")
+    parser.add_argument(
+        "--examples",
+        type=positive_int_argument,
+        help="deterministically select exactly N test Examples (minimum: 8)",
+    )
+    arguments = parser.parse_args(argv)
     test_dataset = RadioDataset("test")
+    _selected_test_example_indices(
+        test_dataset,
+        requested_examples=arguments.examples,
+        global_seed=CONFIG["seed"],
+    )
     model = load_checkpoint(ROOT / RECONSTRUCTOR_RUN_PATH / "best.pt")
     coarse_model = load_coarse_checkpoint(
         ROOT / COARSE_RECONSTRUCTOR_RUN_PATH / "best.pt"
@@ -413,6 +465,7 @@ def eval() -> None:
         sampler_config=CONFIG["sampler"],
         global_seed=CONFIG["seed"],
         evaluation_dir=ROOT / EVALUATION_RUN_PATH,
+        requested_examples=arguments.examples,
     )
 
     for sample_count, comparison in rmse_by_sample_count.items():

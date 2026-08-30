@@ -1,3 +1,4 @@
+from argparse import ArgumentTypeError
 from pathlib import Path
 from shutil import rmtree
 
@@ -5,6 +6,17 @@ from torch import Generator, randperm
 from torch.utils.data import Dataset
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def positive_int_argument(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ArgumentTypeError("must be a positive integer") from error
+    if parsed <= 0:
+        raise ArgumentTypeError("must be a positive integer")
+    return parsed
+
 
 def delete_run():
     run_dir = ROOT / "run"
@@ -25,6 +37,7 @@ def select_example_indices(
     available_examples: int,
     requested_examples: int | None,
     global_seed: int,
+    partition_name: str = "validation",
 ) -> tuple[int, ...]:
     """Select a deterministic, prefix-stable permutation of Examples."""
     if requested_examples is None:
@@ -37,7 +50,7 @@ def select_example_indices(
         raise ValueError("requested Examples must be a positive integer")
     if requested_examples > available_examples:
         raise ValueError(
-            "requested Example count exceeds available validation Examples: "
+            f"requested Example count exceeds available {partition_name} Examples: "
             f"requested {requested_examples}, available {available_examples}"
         )
     generator = Generator().manual_seed(global_seed)

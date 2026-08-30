@@ -2,6 +2,7 @@ import csv
 from pathlib import Path
 import tomllib
 
+import pytest
 from pytest import approx
 from torch import Tensor, are_deterministic_algorithms_enabled, tensor
 from torch.nn import Module, Parameter
@@ -21,8 +22,13 @@ import radio_map_reconstruction.eval as eval_module
 
 
 class FixedEvaluationDataset(Dataset):
+    EVALUATION_SAMPLE_COUNTS = RadioDataset.EVALUATION_SAMPLE_COUNTS
+
+    def __init__(self, example_count: int = 8):
+        self.example_count = example_count
+
     def __len__(self) -> int:
-        return 8 * len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+        return self.example_count * len(RadioDataset.EVALUATION_SAMPLE_COUNTS)
 
     def __getitem__(self, index: int) -> tuple[Tensor, dict[str, Tensor]]:
         sample_index, sample_count_index = divmod(
@@ -207,6 +213,9 @@ def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
         def __init__(self, split):
             self.split = split
 
+        def __len__(self):
+            return 8 * len(self.EVALUATION_SAMPLE_COUNTS)
+
     run_kwargs = {}
 
     def fake_run_evaluation(**kwargs):
@@ -237,7 +246,7 @@ def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
     )
     monkeypatch.setattr(eval_module, "run_evaluation", fake_run_evaluation)
 
-    eval_module.eval()
+    eval_module.eval([])
 
     assert loaded_paths == [
         ("reconstructor", tmp_path / "run" / "reconstructor" / "best.pt"),
@@ -250,6 +259,163 @@ def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
     assert run_kwargs["sampler_config"] == {"alpha": 0.5}
     assert run_kwargs["global_seed"] == 17
     assert run_kwargs["evaluation_dir"] == tmp_path / "run" / "evaluation"
+    assert run_kwargs["requested_examples"] is None
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_limit"),
+    [([], None), (["--examples", "8"], 8)],
+)
+def test_eval_command_routes_optional_example_limit_without_changing_outputs(
+    monkeypatch,
+    tmp_path,
+    arguments,
+    expected_limit,
+):
+    captured = {}
+    dataset = FixedEvaluationDataset(example_count=9)
+    config = {"device": "cpu", "seed": 17, "sampler": {"alpha": 0.5}}
+    monkeypatch.setattr(eval_module, "ROOT", tmp_path)
+    monkeypatch.setattr(eval_module, "CONFIG", config)
+    monkeypatch.setattr(eval_module, "RadioDataset", lambda split: dataset)
+    monkeypatch.setattr(eval_module, "load_checkpoint", lambda path: object())
+    monkeypatch.setattr(eval_module, "load_coarse_checkpoint", lambda path: object())
+
+    def capture_run(**kwargs):
+        captured.update(kwargs)
+        return {10: StrategyRmse(random_rmse=0.3, guided_rmse=0.4)}
+
+    monkeypatch.setattr(eval_module, "run_evaluation", capture_run)
+
+    eval_module.eval(arguments)
+
+    assert captured["test_dataset"] is dataset
+    assert captured["requested_examples"] == expected_limit
+    assert captured["global_seed"] == 17
+    assert captured["evaluation_dir"] == tmp_path / "run" / "evaluation"
+
+
+@pytest.mark.parametrize("argument", ["0", "-2", "not-a-number"])
+def test_eval_command_rejects_invalid_example_arguments(argument):
+    with pytest.raises(SystemExit):
+        eval_module.eval(["--examples", argument])
+
+
+@pytest.mark.parametrize(
+    ("argument", "message"),
+    [("7", "at least 8"), ("10", "requested 10.*available 9")],
+)
+def test_eval_command_rejects_example_boundaries_before_loading_models(
+    monkeypatch,
+    argument,
+    message,
+):
+    monkeypatch.setattr(
+        eval_module,
+        "RadioDataset",
+        lambda split: FixedEvaluationDataset(example_count=9),
+    )
+    monkeypatch.setattr(
+        eval_module,
+        "load_checkpoint",
+        lambda path: pytest.fail("models must not load"),
+    )
+    monkeypatch.setattr(
+        eval_module,
+        "load_coarse_checkpoint",
+        lambda path: pytest.fail("models must not load"),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        eval_module.eval(["--examples", argument])
+
+
+def test_limited_evaluation_selects_a_deterministic_prefix_with_all_sample_counts(
+    monkeypatch,
+    tmp_path,
+):
+    dataset = FixedEvaluationDataset(example_count=10)
+    model = RecordingReconstructor()
+    monkeypatch.setattr(
+        eval_module,
+        "CONFIG",
+        {
+            "device": "cpu",
+            "seed": 17,
+            "sampler": {
+                "alpha": 0.5,
+                "weight_epsilon": 1e-6,
+                "max_iter": 30,
+                "tolerance": 1e-4,
+            },
+        },
+    )
+    monkeypatch.setattr(eval_module, "ROOT", tmp_path)
+    monkeypatch.setattr(eval_module, "RadioDataset", lambda split: dataset)
+    monkeypatch.setattr(eval_module, "load_checkpoint", lambda path: model)
+    monkeypatch.setattr(
+        eval_module,
+        "load_coarse_checkpoint",
+        lambda path: FlatCoarseModel(),
+    )
+    monkeypatch.setattr(eval_module, "_write_test_metrics", lambda *args: None)
+    written_artifacts = {}
+
+    def capture_artifacts(
+        evaluation_dir,
+        bundles,
+        sampling_diagnostics,
+        rmse_by_sample_count,
+    ):
+        written_artifacts.update(
+            evaluation_dir=evaluation_dir,
+            bundle_counts=[bundle.sample_count for bundle in bundles],
+            diagnostic_counts=[
+                diagnostic.sample_count for diagnostic in sampling_diagnostics
+            ],
+            rmse_by_sample_count=rmse_by_sample_count,
+        )
+
+    monkeypatch.setattr(
+        eval_module,
+        "_write_evaluation_artifacts",
+        capture_artifacts,
+    )
+    progress_state = {}
+
+    class RecordingProgress:
+        def __init__(self, iterable, **kwargs):
+            self.iterable = iterable
+            progress_state["total"] = kwargs["total"]
+            progress_state["postfixes"] = []
+
+        def __iter__(self):
+            return iter(self.iterable)
+
+        def set_postfix(self, **kwargs):
+            progress_state["postfixes"].append(kwargs)
+
+    monkeypatch.setattr(eval_module, "tqdm", RecordingProgress)
+
+    eval_module.eval(["--examples", "8"])
+
+    selected = (9, 7, 0, 5, 6, 2, 4, 8)
+    assert len(model.calls) == 16
+    for selected_position, example_index in enumerate(selected):
+        random_call = model.calls[selected_position * 2]
+        guided_call = model.calls[selected_position * 2 + 1]
+        assert random_call[0] == approx(
+            list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+        )
+        assert guided_call[0] == approx(
+            list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+        )
+        assert random_call[1] == approx([(example_index + 1) / 10] * 10)
+    assert written_artifacts["evaluation_dir"] == tmp_path / "run" / "evaluation"
+    assert written_artifacts["bundle_counts"] == [10, 50, 100, 200]
+    assert written_artifacts["diagnostic_counts"] == [10, 50, 100, 200]
+    assert progress_state["total"] == 8
+    assert len(progress_state["postfixes"]) == 8
 
 
 def test_project_exposes_only_the_four_server_commands():

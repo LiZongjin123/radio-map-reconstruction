@@ -1,5 +1,5 @@
 import csv
-from argparse import ArgumentParser, ArgumentTypeError
+from argparse import ArgumentParser
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,23 +32,17 @@ from radio_map_reconstruction.model import ResUnet
 from radio_map_reconstruction.sampling import (
     gradient_distance_weighted_clustering_sample,
 )
-from radio_map_reconstruction.util import sample_identity, select_example_indices
+from radio_map_reconstruction.util import (
+    positive_int_argument,
+    sample_identity,
+    select_example_indices,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / "config.yml"
 with CONFIG_PATH.open(encoding="utf-8") as config_file:
     CONFIG = safe_load(config_file)
-
-
-def _positive_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as error:
-        raise ArgumentTypeError("must be a positive integer") from error
-    if parsed <= 0:
-        raise ArgumentTypeError("must be a positive integer")
-    return parsed
 
 
 @dataclass(frozen=True)
@@ -280,7 +274,7 @@ def tune_alpha(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         "--examples",
-        type=_positive_int,
+        type=positive_int_argument,
         help="deterministically select exactly N validation Examples",
     )
     arguments = parser.parse_args(argv)

@@ -39,3 +39,7 @@ _Avoid_: Global pixel RMSE, physical-unit RMSE
 **City-Map Split**:
 A dataset partition in which all transmitter samples sharing one city and building layout remain in the same train, validation, or test subset.
 _Avoid_: Per-transmitter split, per-sample split
+
+**Example**:
+A single channel map in a dataset partition, paired with its transmitter and building layout. An example limit counts channel maps, not Valid Sampling Points.
+_Avoid_: Sample, case

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from hashlib import blake2b
+from math import ceil, sqrt
 
 import numpy as np
 from sklearn.cluster import KMeans
@@ -28,6 +29,74 @@ def _map_plane(value: Tensor, name: str) -> tuple[Tensor, bool]:
 
 def _restore_channel(value: Tensor, had_channel: bool) -> Tensor:
     return value.unsqueeze(0) if had_channel else value
+
+
+def regular_grid_sampling_mask(
+    valid_receiving_area: Tensor, sample_count: int
+) -> Tensor:
+    """Select Valid Sampling Points from an aspect-aware regular grid."""
+    valid_area, had_channel = _map_plane(
+        valid_receiving_area, "valid_receiving_area"
+    )
+    if (
+        not isinstance(sample_count, int)
+        or isinstance(sample_count, bool)
+        or sample_count <= 0
+    ):
+        raise ValueError("sample_count must be a positive integer")
+    available_count = int(valid_area.bool().sum().item())
+    if available_count < sample_count:
+        raise ValueError(
+            f"requested {sample_count} Valid Sampling Points but only "
+            f"{available_count} candidates exist"
+        )
+    height, width = valid_area.shape
+    minimum_rows = ceil(sample_count / width)
+    row_count = min(
+        max(round(sqrt(sample_count * height / width)), minimum_rows, 1),
+        height,
+        sample_count,
+    )
+    anchors_per_row, extra_anchor_count = divmod(sample_count, row_count)
+    row_anchor_counts = [anchors_per_row] * row_count
+    center_out_rows = sorted(
+        range(row_count), key=lambda row: (abs(2 * row - row_count + 1), row)
+    )
+    for row in center_out_rows[:extra_anchor_count]:
+        row_anchor_counts[row] += 1
+
+    anchors: list[tuple[int, int]] = []
+    for row, column_count in enumerate(row_anchor_counts):
+        row_index = int((row + 0.5) * height / row_count)
+        for column in range(column_count):
+            column_index = int((column + 0.5) * width / column_count)
+            anchors.append((row_index, column_index))
+
+    valid_points = valid_area.bool().flatten().clone()
+    selected_flattened_indices: list[int] = []
+    invalid_anchors: list[tuple[int, int]] = []
+    for row_index, column_index in anchors:
+        flattened_index = row_index * width + column_index
+        if valid_points[flattened_index].item():
+            selected_flattened_indices.append(flattened_index)
+            valid_points[flattened_index] = False
+        else:
+            invalid_anchors.append((row_index, column_index))
+
+    for row_index, column_index in invalid_anchors:
+        available_indices = valid_points.nonzero().flatten()
+        available_rows = available_indices // width
+        available_columns = available_indices % width
+        squared_distances = (available_rows - row_index).square() + (
+            available_columns - column_index
+        ).square()
+        selected_index = int(available_indices[squared_distances.argmin()].item())
+        selected_flattened_indices.append(selected_index)
+        valid_points[selected_index] = False
+
+    sampling_mask = zeros_like(valid_area, dtype=float32)
+    sampling_mask.flatten()[selected_flattened_indices] = 1
+    return _restore_channel(sampling_mask, had_channel)
 
 
 def _normalize_over_candidates(

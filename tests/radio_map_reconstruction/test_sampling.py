@@ -3,6 +3,7 @@ from torch import Tensor, zeros, zeros_like
 
 from radio_map_reconstruction.sampling import (
     gradient_distance_weighted_clustering_sample,
+    regular_grid_sampling_mask,
 )
 
 
@@ -14,6 +15,98 @@ def synthetic_maps() -> tuple[Tensor, Tensor, Tensor]:
     building_map = zeros_like(coarse_map)
     building_map[0, 1, 1] = 1
     return coarse_map, tx_map, building_map
+
+
+def test_regular_grid_places_anchors_at_cell_centers_on_rectangular_maps():
+    valid_receiving_area = zeros((4, 8), dtype=bool) + True
+
+    sampling_mask = regular_grid_sampling_mask(valid_receiving_area, 8)
+
+    expected_points = {
+        (1, 1),
+        (1, 3),
+        (1, 5),
+        (1, 7),
+        (3, 1),
+        (3, 3),
+        (3, 5),
+        (3, 7),
+    }
+    assert {tuple(point) for point in sampling_mask.nonzero().tolist()} == (
+        expected_points
+    )
+
+
+def test_regular_grid_locks_valid_anchors_before_relocating_obstructions():
+    valid_receiving_area = zeros((3, 3), dtype=bool)
+    valid_receiving_area[1, 2] = True
+    valid_receiving_area[0, 2] = True
+
+    sampling_mask = regular_grid_sampling_mask(valid_receiving_area, 2)
+
+    assert sampling_mask.nonzero().tolist() == [[0, 2], [1, 2]]
+
+
+def test_regular_grid_reports_requested_and_available_counts_when_budget_is_impossible():
+    valid_receiving_area = zeros((2, 3), dtype=bool)
+    valid_receiving_area[0, :2] = True
+
+    with raises(
+        ValueError,
+        match="requested 3 Valid Sampling Points but only 2 candidates exist",
+    ):
+        regular_grid_sampling_mask(valid_receiving_area, 3)
+
+
+def test_regular_grid_balances_non_square_counts_around_vertical_center():
+    valid_receiving_area = zeros((8, 8), dtype=bool) + True
+
+    sampling_mask = regular_grid_sampling_mask(valid_receiving_area, 14)
+
+    assert sampling_mask.sum(dim=1).tolist() == [0, 3, 0, 4, 0, 4, 0, 3]
+
+
+def test_regular_grid_relocates_colliding_anchors_greedily_in_row_major_order():
+    valid_receiving_area = zeros((3, 3), dtype=bool)
+    valid_receiving_area[1, 1] = True
+    valid_receiving_area[2, 0] = True
+    valid_receiving_area[2, 2] = True
+
+    sampling_mask = regular_grid_sampling_mask(valid_receiving_area, 2)
+
+    assert sampling_mask.nonzero().tolist() == [[1, 1], [2, 2]]
+
+
+def test_regular_grid_relocation_ties_use_lower_flattened_pixel_index():
+    valid_receiving_area = zeros((3, 3), dtype=bool)
+    valid_receiving_area[1, 0] = True
+    valid_receiving_area[1, 2] = True
+
+    sampling_mask = regular_grid_sampling_mask(valid_receiving_area, 1)
+
+    assert sampling_mask.nonzero().tolist() == [[1, 0]]
+
+
+def test_regular_grid_is_deterministic_in_disconnected_concentrated_regions():
+    valid_receiving_area = zeros((1, 7, 11), dtype=bool)
+    valid_receiving_area[0, 0, :4] = True
+    valid_receiving_area[0, 5:, 8:] = True
+
+    first_mask = regular_grid_sampling_mask(valid_receiving_area, 6)
+    repeated_mask = regular_grid_sampling_mask(valid_receiving_area, 6)
+
+    assert first_mask.shape == valid_receiving_area.shape
+    assert first_mask.equal(repeated_mask)
+    assert first_mask.sum().item() == 6
+    assert not first_mask[~valid_receiving_area].any()
+
+
+def test_regular_grid_rejects_invalid_sample_counts():
+    valid_receiving_area = zeros((2, 2), dtype=bool) + True
+
+    for invalid_sample_count in (0, 1.5, True):
+        with raises(ValueError, match="sample_count must be a positive integer"):
+            regular_grid_sampling_mask(valid_receiving_area, invalid_sample_count)
 
 
 def test_gradient_distance_weighted_clustering_strategy_is_deterministic_and_returns_exact_valid_sampling_points():

@@ -5,9 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from time import monotonic
 
-import matplotlib
-
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from torch import (
     Tensor,
@@ -275,7 +272,12 @@ def _load_role_model(role_config: dict, checkpoint_path: Path) -> Module:
 
 
 def tune_alpha(argv: Sequence[str] | None = None) -> None:
-    parser = ArgumentParser(description="Tune the guided sampler alpha value.")
+    parser = ArgumentParser(
+        description=(
+            "Tune alpha for the Gradient-Distance Weighted Clustering "
+            "Sampling Strategy."
+        )
+    )
     parser.add_argument(
         "--examples",
         type=_positive_int,

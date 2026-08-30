@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 import tomllib
 
+import matplotlib
 import pytest
 from pytest import approx
 from torch import (
@@ -20,12 +21,12 @@ from torch.nn import Module
 from torch.utils.data import Dataset
 from torchvision.io import write_png
 
-from radio_map_reconstruction.alpha_validation import (
-    run_alpha_validation,
-    select_example_indices,
-)
+matplotlib.use("Agg")
+
+from radio_map_reconstruction.alpha_validation import run_alpha_validation
 from radio_map_reconstruction.data import RadioDataset
 from radio_map_reconstruction.model import ResUnet
+from radio_map_reconstruction.util import select_example_indices
 import radio_map_reconstruction.alpha_validation as alpha_validation_module
 
 
@@ -165,7 +166,7 @@ def test_bounded_example_selection_is_deterministic_prefix_stable_and_permuted()
     assert larger != tuple(range(7))
 
 
-@pytest.mark.parametrize("requested_examples", [0, -1])
+@pytest.mark.parametrize("requested_examples", [0, -1, 1.5, True])
 def test_bounded_example_selection_rejects_non_positive_counts(requested_examples):
     with pytest.raises(ValueError, match="positive integer"):
         select_example_indices(

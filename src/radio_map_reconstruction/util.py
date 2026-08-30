@@ -29,7 +29,11 @@ def select_example_indices(
     """Select a deterministic, prefix-stable permutation of Examples."""
     if requested_examples is None:
         return tuple(range(available_examples))
-    if isinstance(requested_examples, bool) or requested_examples <= 0:
+    if (
+        isinstance(requested_examples, bool)
+        or not isinstance(requested_examples, int)
+        or requested_examples <= 0
+    ):
         raise ValueError("requested Examples must be a positive integer")
     if requested_examples > available_examples:
         raise ValueError(

@@ -37,7 +37,7 @@ def test_regular_grid_places_anchors_at_cell_centers_on_rectangular_maps():
     )
 
 
-def test_regular_grid_locks_valid_anchors_before_relocating_obstructions():
+def test_regular_grid_locks_valid_anchors_before_relocating_positions_outside_valid_receiving_area():
     valid_receiving_area = zeros((3, 3), dtype=bool)
     valid_receiving_area[1, 2] = True
     valid_receiving_area[0, 2] = True
@@ -64,6 +64,14 @@ def test_regular_grid_balances_non_square_counts_around_vertical_center():
     sampling_mask = regular_grid_sampling_mask(valid_receiving_area, 14)
 
     assert sampling_mask.sum(dim=1).tolist() == [0, 3, 0, 4, 0, 4, 0, 3]
+
+
+def test_regular_grid_assigns_extra_anchors_to_mirrored_rows():
+    valid_receiving_area = zeros((8, 8), dtype=bool) + True
+
+    sampling_mask = regular_grid_sampling_mask(valid_receiving_area, 22)
+
+    assert sampling_mask.sum(dim=1).tolist() == [4, 0, 5, 0, 4, 5, 0, 4]
 
 
 def test_regular_grid_relocates_colliding_anchors_greedily_in_row_major_order():

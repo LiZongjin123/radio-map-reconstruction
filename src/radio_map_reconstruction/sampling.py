@@ -31,26 +31,30 @@ def _restore_channel(value: Tensor, had_channel: bool) -> Tensor:
     return value.unsqueeze(0) if had_channel else value
 
 
-def regular_grid_sampling_mask(
-    valid_receiving_area: Tensor, sample_count: int
-) -> Tensor:
-    """Select Valid Sampling Points from an aspect-aware regular grid."""
-    valid_area, had_channel = _map_plane(
-        valid_receiving_area, "valid_receiving_area"
-    )
+def _validate_sample_count(sample_count: int) -> None:
     if (
         not isinstance(sample_count, int)
         or isinstance(sample_count, bool)
         or sample_count <= 0
     ):
         raise ValueError("sample_count must be a positive integer")
-    available_count = int(valid_area.bool().sum().item())
+
+
+def regular_grid_sampling_mask(
+    valid_receiving_area: Tensor, sample_count: int
+) -> Tensor:
+    """Select Valid Sampling Points from an aspect-aware regular grid."""
+    valid_receiving_area_plane, had_channel = _map_plane(
+        valid_receiving_area, "valid_receiving_area"
+    )
+    _validate_sample_count(sample_count)
+    available_count = int(valid_receiving_area_plane.bool().sum().item())
     if available_count < sample_count:
         raise ValueError(
             f"requested {sample_count} Valid Sampling Points but only "
             f"{available_count} candidates exist"
         )
-    height, width = valid_area.shape
+    height, width = valid_receiving_area_plane.shape
     minimum_rows = ceil(sample_count / width)
     row_count = min(
         max(round(sqrt(sample_count * height / width)), minimum_rows, 1),
@@ -58,11 +62,21 @@ def regular_grid_sampling_mask(
         sample_count,
     )
     anchors_per_row, extra_anchor_count = divmod(sample_count, row_count)
-    row_anchor_counts = [anchors_per_row] * row_count
-    center_out_rows = sorted(
-        range(row_count), key=lambda row: (abs(2 * row - row_count + 1), row)
+    mirrored_row_pairs = sorted(
+        ((row, row_count - row - 1) for row in range(row_count // 2)),
+        key=lambda pair: abs(pair[0] - (row_count - 1) / 2),
     )
-    for row in center_out_rows[:extra_anchor_count]:
+    extra_rows: list[int] = []
+    if row_count % 2 == 1 and extra_anchor_count % 2 == 1:
+        extra_rows.append(row_count // 2)
+    extra_pair_count = extra_anchor_count // 2
+    for upper_row, lower_row in mirrored_row_pairs[:extra_pair_count]:
+        extra_rows.extend((upper_row, lower_row))
+    if row_count % 2 == 0 and extra_anchor_count % 2 == 1:
+        extra_rows.append(mirrored_row_pairs[extra_pair_count][0])
+
+    row_anchor_counts = [anchors_per_row] * row_count
+    for row in extra_rows:
         row_anchor_counts[row] += 1
 
     anchors: list[tuple[int, int]] = []
@@ -72,19 +86,19 @@ def regular_grid_sampling_mask(
             column_index = int((column + 0.5) * width / column_count)
             anchors.append((row_index, column_index))
 
-    valid_points = valid_area.bool().flatten().clone()
+    available_candidates = valid_receiving_area_plane.bool().flatten().clone()
     selected_flattened_indices: list[int] = []
     invalid_anchors: list[tuple[int, int]] = []
     for row_index, column_index in anchors:
         flattened_index = row_index * width + column_index
-        if valid_points[flattened_index].item():
+        if available_candidates[flattened_index].item():
             selected_flattened_indices.append(flattened_index)
-            valid_points[flattened_index] = False
+            available_candidates[flattened_index] = False
         else:
             invalid_anchors.append((row_index, column_index))
 
     for row_index, column_index in invalid_anchors:
-        available_indices = valid_points.nonzero().flatten()
+        available_indices = available_candidates.nonzero().flatten()
         available_rows = available_indices // width
         available_columns = available_indices % width
         squared_distances = (available_rows - row_index).square() + (
@@ -92,9 +106,9 @@ def regular_grid_sampling_mask(
         ).square()
         selected_index = int(available_indices[squared_distances.argmin()].item())
         selected_flattened_indices.append(selected_index)
-        valid_points[selected_index] = False
+        available_candidates[selected_index] = False
 
-    sampling_mask = zeros_like(valid_area, dtype=float32)
+    sampling_mask = zeros_like(valid_receiving_area_plane, dtype=float32)
     sampling_mask.flatten()[selected_flattened_indices] = 1
     return _restore_channel(sampling_mask, had_channel)
 
@@ -153,12 +167,7 @@ def gradient_distance_weighted_clustering_sample(
         raise ValueError("coarse_map, tx_map, and building_map must have equal shapes")
     if len({coarse_had_channel, tx_had_channel, building_had_channel}) != 1:
         raise ValueError("coarse_map, tx_map, and building_map must use equal ranks")
-    if (
-        not isinstance(sample_count, int)
-        or isinstance(sample_count, bool)
-        or sample_count <= 0
-    ):
-        raise ValueError("sample_count must be a positive integer")
+    _validate_sample_count(sample_count)
     if not 0 <= alpha <= 1:
         raise ValueError("alpha must be between 0 and 1")
     if weight_epsilon <= 0:

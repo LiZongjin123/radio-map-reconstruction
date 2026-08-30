@@ -136,13 +136,10 @@ def _guided_sampling_inputs(
             tolerance=sampler_config["tolerance"],
         )
         guided_inputs.append(
-            cat(
-                (
-                    gain[sample_count_index] * sampling_mask,
-                    inputs[sample_count_index, 1:2],
-                    inputs[sample_count_index, 2:3],
-                    sampling_mask,
-                )
+            _reconstructor_input(
+                gain=gain[sample_count_index],
+                inputs=inputs[sample_count_index],
+                sampling_mask=sampling_mask,
             )
         )
         if (example_position, sample_count) in SAMPLING_DIAGNOSTIC_CASES:
@@ -170,6 +167,19 @@ def _guided_sampling_inputs(
     return stack(guided_inputs), diagnostic_figures
 
 
+def _reconstructor_input(
+    *, gain: Tensor, inputs: Tensor, sampling_mask: Tensor
+) -> Tensor:
+    return cat(
+        (
+            gain * sampling_mask,
+            inputs[1:2],
+            inputs[2:3],
+            sampling_mask,
+        )
+    )
+
+
 def _regular_grid_sampling_inputs(
     *,
     gain: Tensor,
@@ -183,13 +193,10 @@ def _regular_grid_sampling_inputs(
             valid_receiving_areas[sample_count_index], sample_count
         )
         regular_grid_inputs.append(
-            cat(
-                (
-                    gain[sample_count_index] * sampling_mask,
-                    inputs[sample_count_index, 1:2],
-                    inputs[sample_count_index, 2:3],
-                    sampling_mask,
-                )
+            _reconstructor_input(
+                gain=gain[sample_count_index],
+                inputs=inputs[sample_count_index],
+                sampling_mask=sampling_mask,
             )
         )
     return stack(regular_grid_inputs)

@@ -4,7 +4,7 @@ import tomllib
 
 import pytest
 from pytest import approx
-from torch import Tensor, are_deterministic_algorithms_enabled, tensor
+from torch import Tensor, are_deterministic_algorithms_enabled, linspace, tensor
 from torch.nn import Module, Parameter
 from torch.utils.data import Dataset
 
@@ -65,9 +65,11 @@ class RecordingReconstructor(Module):
         super().__init__()
         self.dummy_parameter = Parameter(tensor(0.0))
         self.calls: list[tuple[list[int], list[float]]] = []
+        self.input_batches: list[Tensor] = []
 
     def forward(self, inputs: Tensor) -> Tensor:
         assert are_deterministic_algorithms_enabled()
+        self.input_batches.append(inputs.detach().clone())
         mask_sums = inputs[:, 3].flatten(1).sum(1)
         sparse_sums = inputs[:, 0].flatten(1).sum(1)
         self.calls.append(
@@ -80,6 +82,18 @@ class RecordingReconstructor(Module):
             tensor(1.5).expand(inputs.shape[0], 1, 1, 202)
             + self.dummy_parameter * 0
         )
+
+
+class MaskSensitiveReconstructor(Module):
+    def forward(self, inputs: Tensor) -> Tensor:
+        coordinate_values = linspace(
+            0,
+            1,
+            inputs.shape[-1],
+            dtype=inputs.dtype,
+            device=inputs.device,
+        ).reshape(1, 1, 1, -1)
+        return inputs[:, 3:4] * coordinate_values
 
 
 def read_png_bytes(evaluation_dir):
@@ -179,6 +193,15 @@ def test_unified_evaluation_writes_reproducible_final_artifacts_without_npz(
         assert sparse_values == approx([ground_truth_value] * 10)
     assert len(first_model.calls) == 24
     assert first_model.calls == second_model.calls
+    assert len(first_model.input_batches) == 24
+    assert all(
+        first_batch.equal(second_batch)
+        for first_batch, second_batch in zip(
+            first_model.input_batches,
+            second_model.input_batches,
+            strict=True,
+        )
+    )
 
     assert set(first_pngs) == {
         "rmse_vs_sample_count.png",
@@ -205,6 +228,59 @@ def test_unified_evaluation_writes_reproducible_final_artifacts_without_npz(
         are_deterministic_algorithms_enabled()
         == deterministic_algorithms_were_enabled
     )
+
+
+def test_random_and_guided_rmse_remain_numerically_stable_at_evaluation_seam(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setitem(CONFIG, "device", "cpu")
+    monkeypatch.setattr(eval_module, "_write_test_metrics", lambda *args: None)
+    monkeypatch.setattr(
+        eval_module, "_write_evaluation_artifacts", lambda *args: None
+    )
+
+    rmse_by_sample_count = run_evaluation(
+        model=MaskSensitiveReconstructor(),
+        coarse_model=FlatCoarseModel(),
+        test_dataset=FixedEvaluationDataset(),
+        sampler_config={
+            "alpha": 0.5,
+            "weight_epsilon": 1e-6,
+            "max_iter": 30,
+            "tolerance": 1e-4,
+        },
+        global_seed=42,
+        evaluation_dir=tmp_path,
+    )
+
+    assert [
+        value.random_rmse for value in rmse_by_sample_count.values()
+    ] == approx([
+        0.4484856817871332,
+        0.4449373548850417,
+        0.439734204672277,
+        0.42589924298226833,
+        0.4058195613324642,
+        0.38635675236582756,
+        0.37036666832864285,
+        0.36023686826229095,
+        0.35799524188041687,
+        0.3653622455894947,
+    ])
+    assert [
+        value.guided_rmse for value in rmse_by_sample_count.values()
+    ] == approx([
+        0.4535260535776615,
+        0.45395165868103504,
+        0.45640975795686245,
+        0.45016542077064514,
+        0.44552214071154594,
+        0.44552696123719215,
+        0.4348500221967697,
+        0.4069547988474369,
+        0.37894369289278984,
+        0.3653622455894947,
+    ])
 
 
 def test_eval_loads_both_frozen_role_checkpoints_and_prints_three_strategies(

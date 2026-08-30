@@ -50,6 +50,16 @@ def test_rmse_comparison_curve_presents_all_strategies_in_required_order(
         "-",
         "-",
     ]
+    assert [line.get_xdata().tolist() for line in captured_figure.axes[0].lines] == [
+        [10, 50, 100],
+        [10, 50, 100],
+        [10, 50, 100],
+    ]
+    assert [line.get_ydata().tolist() for line in captured_figure.axes[0].lines] == [
+        [0.30, 0.20, 0.15],
+        [0.28, 0.18, 0.12],
+        [0.25, 0.15, 0.10],
+    ]
 
 
 def test_sampling_diagnostic_figure_shows_decision_chain_and_actual_mask(

@@ -9,7 +9,9 @@ from radio_map_reconstruction.plot import (
 )
 
 
-def test_rmse_comparison_curve_labels_both_strategies(tmp_path, monkeypatch):
+def test_rmse_comparison_curve_presents_all_strategies_in_required_order(
+    tmp_path, monkeypatch
+):
     captured_figure = None
     original_savefig = Figure.savefig
 
@@ -24,6 +26,7 @@ def test_rmse_comparison_curve_labels_both_strategies(tmp_path, monkeypatch):
     save_rmse_comparison_curve(
         sample_counts=[10, 50, 100],
         random_rmse=[0.30, 0.20, 0.15],
+        regular_grid_rmse=[0.28, 0.18, 0.12],
         guided_rmse=[0.25, 0.15, 0.10],
         output_path=output_path,
     )
@@ -32,7 +35,21 @@ def test_rmse_comparison_curve_labels_both_strategies(tmp_path, monkeypatch):
     assert [
         text.get_text()
         for text in captured_figure.axes[0].get_legend().get_texts()
-    ] == ["Random Sampling", "Guided Sampling"]
+    ] == [
+        "Random Sampling",
+        "Regular-Grid Sampling",
+        "Guided Sampling",
+    ]
+    assert [line.get_marker() for line in captured_figure.axes[0].lines] == [
+        "o",
+        "^",
+        "s",
+    ]
+    assert [line.get_linestyle() for line in captured_figure.axes[0].lines] == [
+        "-",
+        "-",
+        "-",
+    ]
 
 
 def test_sampling_diagnostic_figure_shows_decision_chain_and_actual_mask(

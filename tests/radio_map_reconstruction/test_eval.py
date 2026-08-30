@@ -142,6 +142,7 @@ def test_unified_evaluation_writes_reproducible_final_artifacts_without_npz(
         "sample_count",
         "random_mean_per_sample_normalized_rmse",
         "guided_mean_per_sample_normalized_rmse",
+        "uniform_mean_per_sample_normalized_rmse",
     ]
     assert len(first_rows) == 10
     assert [int(row["sample_count"]) for row in first_rows] == list(
@@ -155,23 +156,28 @@ def test_unified_evaluation_writes_reproducible_final_artifacts_without_npz(
         float(row["guided_mean_per_sample_normalized_rmse"])
         for row in first_rows
     ] == approx([0.55] * 10)
+    assert [
+        float(row["uniform_mean_per_sample_normalized_rmse"])
+        for row in first_rows
+    ] == approx([0.55] * 10)
     assert list(first_rmse) == list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
     for comparison in first_rmse.values():
         assert comparison.random_rmse == approx(0.55)
         assert comparison.guided_rmse == approx(0.55)
+        assert comparison.regular_grid_rmse == approx(0.55)
     assert second_rmse == first_rmse
     assert second_rows == first_rows
 
     for call_index, (mask_sums, sparse_values) in enumerate(
         first_model.calls
     ):
-        sample_index = call_index // 2
+        sample_index = call_index // 3
         ground_truth_value = (sample_index + 1) / 10
         assert mask_sums == approx(
             list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
         )
         assert sparse_values == approx([ground_truth_value] * 10)
-    assert len(first_model.calls) == 16
+    assert len(first_model.calls) == 24
     assert first_model.calls == second_model.calls
 
     assert set(first_pngs) == {
@@ -201,8 +207,8 @@ def test_unified_evaluation_writes_reproducible_final_artifacts_without_npz(
     )
 
 
-def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
-    monkeypatch, tmp_path
+def test_eval_loads_both_frozen_role_checkpoints_and_prints_three_strategies(
+    monkeypatch, tmp_path, capsys
 ):
     loaded_paths = []
     model = RecordingReconstructor()
@@ -221,7 +227,11 @@ def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
     def fake_run_evaluation(**kwargs):
         run_kwargs.update(kwargs)
         return {
-            count: StrategyRmse(random_rmse=0.3, guided_rmse=0.4)
+            count: StrategyRmse(
+                random_rmse=0.3,
+                guided_rmse=0.4,
+                regular_grid_rmse=0.35,
+            )
             for count in RadioDataset.EVALUATION_SAMPLE_COUNTS
         }
 
@@ -260,6 +270,12 @@ def test_eval_loads_both_frozen_role_checkpoints_for_the_test_partition(
     assert run_kwargs["global_seed"] == 17
     assert run_kwargs["evaluation_dir"] == tmp_path / "run" / "evaluation"
     assert run_kwargs["requested_examples"] is None
+    first_line = capsys.readouterr().out.splitlines()[0]
+    assert first_line.endswith(
+        "Random Sampling=0.300000 "
+        "Regular-Grid Sampling=0.350000 "
+        "Guided Sampling=0.400000"
+    )
 
 
 @pytest.mark.parametrize(
@@ -283,7 +299,13 @@ def test_eval_command_routes_optional_example_limit_without_changing_outputs(
 
     def capture_run(**kwargs):
         captured.update(kwargs)
-        return {10: StrategyRmse(random_rmse=0.3, guided_rmse=0.4)}
+        return {
+            10: StrategyRmse(
+                random_rmse=0.3,
+                guided_rmse=0.4,
+                regular_grid_rmse=0.35,
+            )
+        }
 
     monkeypatch.setattr(eval_module, "run_evaluation", capture_run)
 
@@ -400,17 +422,25 @@ def test_limited_evaluation_selects_a_deterministic_prefix_with_all_sample_count
     eval_module.eval(["--examples", "8"])
 
     selected = (9, 7, 0, 5, 6, 2, 4, 8)
-    assert len(model.calls) == 16
+    assert len(model.calls) == 24
     for selected_position, example_index in enumerate(selected):
-        random_call = model.calls[selected_position * 2]
-        guided_call = model.calls[selected_position * 2 + 1]
+        random_call = model.calls[selected_position * 3]
+        regular_grid_call = model.calls[selected_position * 3 + 1]
+        guided_call = model.calls[selected_position * 3 + 2]
         assert random_call[0] == approx(
             list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
         )
         assert guided_call[0] == approx(
             list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
         )
+        assert regular_grid_call[0] == approx(
+            list(RadioDataset.EVALUATION_SAMPLE_COUNTS)
+        )
         assert random_call[1] == approx([(example_index + 1) / 10] * 10)
+        assert regular_grid_call[1] == approx(
+            [(example_index + 1) / 10] * 10
+        )
+        assert guided_call[1] == approx([(example_index + 1) / 10] * 10)
     assert written_artifacts["evaluation_dir"] == tmp_path / "run" / "evaluation"
     assert written_artifacts["bundle_counts"] == [10, 50, 100, 200]
     assert written_artifacts["diagnostic_counts"] == [10, 50, 100, 200]

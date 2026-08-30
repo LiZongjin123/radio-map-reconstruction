@@ -40,6 +40,7 @@ from radio_map_reconstruction.plot import (
 )
 from radio_map_reconstruction.sampling import (
     gradient_distance_weighted_clustering_sample,
+    regular_grid_sampling_mask,
 )
 from radio_map_reconstruction.train import CONFIG
 from radio_map_reconstruction.util import (
@@ -53,6 +54,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class StrategyRmse(NamedTuple):
     random_rmse: float
     guided_rmse: float
+    regular_grid_rmse: float
 
 
 def _selected_test_example_indices(
@@ -168,6 +170,31 @@ def _guided_sampling_inputs(
     return stack(guided_inputs), diagnostic_figures
 
 
+def _regular_grid_sampling_inputs(
+    *,
+    gain: Tensor,
+    inputs: Tensor,
+    valid_receiving_areas: Tensor,
+    sample_counts: tuple[int, ...],
+) -> Tensor:
+    regular_grid_inputs = []
+    for sample_count_index, sample_count in enumerate(sample_counts):
+        sampling_mask = regular_grid_sampling_mask(
+            valid_receiving_areas[sample_count_index], sample_count
+        )
+        regular_grid_inputs.append(
+            cat(
+                (
+                    gain[sample_count_index] * sampling_mask,
+                    inputs[sample_count_index, 1:2],
+                    inputs[sample_count_index, 2:3],
+                    sampling_mask,
+                )
+            )
+        )
+    return stack(regular_grid_inputs)
+
+
 def _accumulate_rmse(
     outputs: Tensor,
     targets: dict[str, Tensor],
@@ -265,6 +292,10 @@ def _write_evaluation_artifacts(
             comparison.random_rmse
             for comparison in rmse_by_sample_count.values()
         ],
+        regular_grid_rmse=[
+            comparison.regular_grid_rmse
+            for comparison in rmse_by_sample_count.values()
+        ],
         guided_rmse=[
             comparison.guided_rmse
             for comparison in rmse_by_sample_count.values()
@@ -282,6 +313,7 @@ def _write_test_metrics(
         "sample_count",
         "random_mean_per_sample_normalized_rmse",
         "guided_mean_per_sample_normalized_rmse",
+        "uniform_mean_per_sample_normalized_rmse",
     )
     with metrics_path.open("w", newline="", encoding="utf-8") as metrics_file:
         writer = csv.DictWriter(metrics_file, fieldnames=fieldnames)
@@ -294,6 +326,9 @@ def _write_test_metrics(
                 ),
                 "guided_mean_per_sample_normalized_rmse": (
                     comparison.guided_rmse
+                ),
+                "uniform_mean_per_sample_normalized_rmse": (
+                    comparison.regular_grid_rmse
                 ),
             })
 
@@ -308,7 +343,7 @@ def run_evaluation(
     evaluation_dir: str | Path,
     requested_examples: int | None = None,
 ) -> dict[int, StrategyRmse]:
-    """Compare fixed-seed random and configured-alpha guided sampling on one frozen reconstructor."""
+    """Compare Random, Regular-Grid, and Guided Sampling."""
     sample_counts = tuple(test_dataset.EVALUATION_SAMPLE_COUNTS)
     example_indices = _selected_test_example_indices(
         test_dataset,
@@ -334,6 +369,9 @@ def run_evaluation(
     backends.cudnn.benchmark = False
 
     random_rmse_sums = {sample_count: 0.0 for sample_count in sample_counts}
+    regular_grid_rmse_sums = {
+        sample_count: 0.0 for sample_count in sample_counts
+    }
     guided_rmse_sums = {sample_count: 0.0 for sample_count in sample_counts}
     bundles: list[EvaluationBundle] = []
     sampling_diagnostics: list[SamplingDiagnosticData] = []
@@ -381,6 +419,20 @@ def run_evaluation(
                     )
                 )
 
+                regular_grid_inputs = _regular_grid_sampling_inputs(
+                    gain=targets["gain"],
+                    inputs=inputs,
+                    valid_receiving_areas=targets["mask"],
+                    sample_counts=sample_counts,
+                )
+                regular_grid_outputs = model(regular_grid_inputs)
+                _accumulate_rmse(
+                    regular_grid_outputs,
+                    targets,
+                    regular_grid_rmse_sums,
+                    sample_counts,
+                )
+
                 guided_inputs, case_diagnostics = _guided_sampling_inputs(
                     coarse_model=coarse_model,
                     gain=targets["gain"],
@@ -404,9 +456,10 @@ def run_evaluation(
                     sample_counts,
                 )
 
-                evaluated_cases = (sample_position + 1) * 2 * len(sample_counts)
+                evaluated_cases = (sample_position + 1) * 3 * len(sample_counts)
                 running_rmse = (
                     sum(random_rmse_sums.values())
+                    + sum(regular_grid_rmse_sums.values())
                     + sum(guided_rmse_sums.values())
                 ) / evaluated_cases
                 progress.set_postfix(rmse=f"{running_rmse:.6f}")
@@ -424,6 +477,9 @@ def run_evaluation(
         sample_count: StrategyRmse(
             random_rmse=random_rmse_sums[sample_count] / example_count,
             guided_rmse=guided_rmse_sums[sample_count] / example_count,
+            regular_grid_rmse=(
+                regular_grid_rmse_sums[sample_count] / example_count
+            ),
         )
         for sample_count in sample_counts
     }
@@ -471,6 +527,7 @@ def eval(argv: Sequence[str] | None = None) -> None:
     for sample_count, comparison in rmse_by_sample_count.items():
         print(
             f"test rmse ({sample_count} samples): "
-            f"random={comparison.random_rmse:.6f} "
-            f"guided={comparison.guided_rmse:.6f}"
+            f"Random Sampling={comparison.random_rmse:.6f} "
+            f"Regular-Grid Sampling={comparison.regular_grid_rmse:.6f} "
+            f"Guided Sampling={comparison.guided_rmse:.6f}"
         )

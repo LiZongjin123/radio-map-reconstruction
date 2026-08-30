@@ -38,6 +38,7 @@ def save_rmse_comparison_curve(
     *,
     sample_counts: Sequence[int],
     random_rmse: Sequence[float],
+    regular_grid_rmse: Sequence[float],
     guided_rmse: Sequence[float],
     output_path: str | Path,
 ) -> None:
@@ -48,6 +49,13 @@ def save_rmse_comparison_curve(
         marker="o",
         linewidth=1.8,
         label="Random Sampling",
+    )
+    axes.plot(
+        list(sample_counts),
+        list(regular_grid_rmse),
+        marker="^",
+        linewidth=1.8,
+        label="Regular-Grid Sampling",
     )
     axes.plot(
         list(sample_counts),

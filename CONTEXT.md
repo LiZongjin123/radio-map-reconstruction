@@ -24,6 +24,10 @@ _Avoid_: Nested sampling mask
 A deterministic sampling strategy that selects exactly the requested number of valid sampling points by balancing predicted channel-map variation, transmitter distance, and spatial coverage.
 _Avoid_: Gradient-guided probabilistic sampler, Sampling model
 
+**Regular-Grid Sampling Strategy**:
+A deterministic baseline sampling strategy that distributes the requested valid sampling points from a regular spatial grid, relocating grid positions that fall outside the valid receiving area to valid sampling points.
+_Avoid_: Uniform sampling, Uniform KMeans sampling, Random sampling
+
 **Evaluation Bundle**:
 The ground truth, sampling mask, sparse channel map, reconstructed channel map, and absolute error retained together for later visualization.
 _Avoid_: Result image, visualization output
@@ -31,6 +35,10 @@ _Avoid_: Result image, visualization output
 **Evaluation Bundle Figure**:
 A four-panel report figure derived from one evaluation bundle, showing the ground truth, sparse channel map, reconstructed channel map, and absolute error.
 _Avoid_: Evaluation bundle, joint image
+
+**Sampling Diagnostic Figure**:
+A five-panel report figure for the gradient-distance weighted clustering sampling strategy, showing its coarse reconstruction, normalized gradient, normalized distance, sampling score, and clustering and sampling result.
+_Avoid_: Evaluation Bundle Figure, five-panel evaluation figure
 
 **Mean Per-Sample Normalized RMSE**:
 For each channel-map sample, normalized RMSE is computed over that sample's valid receiving area; the reported metric is the arithmetic mean of those per-sample RMSE values.
